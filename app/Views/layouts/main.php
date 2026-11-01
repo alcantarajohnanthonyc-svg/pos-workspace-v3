@@ -424,12 +424,19 @@ if ($notifFromDb) {
     var csrfName = <?= json_encode(csrf_header(), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     var csrfToken = <?= json_encode(csrf_hash(), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
 
+    var known = <?= (int) $notifCount ?>;   /* unread count the bell is showing now */
+
     function setCount(n) {
+        known = n;
         badge.textContent = n > 9 ? '9+' : String(n);
         badge.classList.toggle('hidden', n < 1);
         if (readAll) { readAll.classList.toggle('hidden', n < 1); }
     }
-    window.AppNotif = { setCount: setCount, refresh: refresh };
+    /* called by the heartbeat: when the count changed, fetch the list FIRST, then badge and list appear together */
+    function sync(n) {
+        if (n !== known) { refresh(); }
+    }
+    window.AppNotif = { setCount: setCount, refresh: refresh, sync: sync };
 
     function el(tag, cls, text) { var n = document.createElement(tag); if (cls) { n.className = cls; } if (text) { n.textContent = text; } return n; }
 
@@ -481,7 +488,7 @@ if ($notifFromDb) {
 </script>
 
 <script>
-/* Single-login heartbeat: every 30 s ask the server if this session still owns the account.
+/* Single-login heartbeat: every 15 s ask the server if this session still owns the account.
    401 (logged in on another device, logged out, or deactivated) -> go to the login page.
    Network errors are ignored so a bad connection never logs anyone out. */
 (function () {
@@ -501,13 +508,13 @@ if ($notifFromDb) {
                 return r.ok ? r.json() : null;
             })
             .then(function (j) {
-                if (j && typeof j.unread === 'number' && window.AppNotif) { window.AppNotif.setCount(j.unread); }
+                if (j && typeof j.unread === 'number' && window.AppNotif) { window.AppNotif.sync(j.unread); }
             })
             .catch(function () {})
             .finally(function () { busy = false; });
     }
 
-    setInterval(check, 30000);
+    setInterval(check, 15000);
     document.addEventListener('visibilitychange', function () { if (!document.hidden) { check(); } });
 })();
 </script>

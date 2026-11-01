@@ -13,9 +13,11 @@ class Auth extends BaseController
 
     public function __construct()
     {
-        $clientId     = env('GOOGLE_CLIENT_ID', env('google.clientId'));
-        $clientSecret = env('GOOGLE_CLIENT_SECRET', env('google.clientSecret'));
-        $redirectUri  = env('GOOGLE_REDIRECT_URI', env('google.redirectUri'));
+        // Config\Google (app/Config/Google.php) first, so no .env is needed; the old env() keys still work as a fallback
+        $g            = config('Google');
+        $clientId     = $g->clientId     ?: env('GOOGLE_CLIENT_ID', env('google.clientId'));
+        $clientSecret = $g->clientSecret ?: env('GOOGLE_CLIENT_SECRET', env('google.clientSecret'));
+        $redirectUri  = $g->redirectUri  ?: env('GOOGLE_REDIRECT_URI', env('google.redirectUri'));
 
         // Disables SSL verification for local development (XAMPP cURL error 60 fix)
         $guzzleClient = new \GuzzleHttp\Client([
@@ -102,7 +104,7 @@ class Auth extends BaseController
                 return redirect()->to(base_url('auth/login'));
             }
 
-            $allowedDomain = strtolower(trim((string) env('GOOGLE_ALLOWED_DOMAIN', 'bounty.com.ph')));
+            $allowedDomain = strtolower(trim((string) (config('Google')->allowedDomain ?: env('GOOGLE_ALLOWED_DOMAIN', 'bounty.com.ph'))));
             $emailDomain = strtolower(substr(strrchr($email, '@'), 1) ?: '');
 
             if ($allowedDomain !== '' && $emailDomain !== $allowedDomain) {

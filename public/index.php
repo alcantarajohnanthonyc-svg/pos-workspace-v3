@@ -25,6 +25,19 @@ if (version_compare(PHP_VERSION, $minPhpVersion, '<')) {
 
 /*
  *---------------------------------------------------------------
+ * ENVIRONMENT (instead of CI_ENVIRONMENT in .env)
+ *---------------------------------------------------------------
+ * Online (not localhost) = production, so errors are hidden and only written to writable/logs.
+ * On your PC (localhost) nothing is defined here, so your .env still decides (development).
+ */
+if (! defined('CI_ENVIRONMENT')) {
+    $host  = $_SERVER['HTTP_HOST'] ?? '';
+    $local = $host === '' || str_starts_with($host, 'localhost') || str_starts_with($host, '127.0.0.1') || str_starts_with($host, '[::1]');
+    define('CI_ENVIRONMENT', $local ? 'development' : 'production');
+}
+
+/*
+ *---------------------------------------------------------------
  * SET THE CURRENT DIRECTORY
  *---------------------------------------------------------------
  */
