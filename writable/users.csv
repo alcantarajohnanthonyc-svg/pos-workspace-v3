@@ -1,0 +1,16 @@
+id,name,email,password,role,avatar
+2,John Anthony Alcantara,jcalcantara@bounty.com.ph,$2y$12$l.CcrbusgQkJpE6Tb9HLUOaWrFIKEiKo5zwmb6AOfjQwYcbFPbtJG,senior,https://lh3.googleusercontent.com/a/ACg8ocLwDoqRn5v_v6zAhOvaEr8OIQrmrsQ4MHFe6vt6p4Y3HVq_cCk=s96-c
+3,john anthony alcantara,alcantarajohnanthon@gmail.com,$2y$10$7dsfn1My9quypiz7bYc1r.nFVErYWV3PnI7VYHbGGLZan4K1m0Y..,superadmin,NULL
+4,Ronidel Virrey,rrvirrey@bounty.com.ph,$2y$10$privmCOalzOuyN92Md0bAOLog1plVSXNiSgn1XIHWhg019WXGUXmW,senior,https://lh3.googleusercontent.com/a/ACg8ocLXIUj9EGDrL1A74fzRBziEOisiPQPBkFxt89F70DwFANyDdg=s96-c
+5,Jayson Adriano,jtadriano@bounty.com.ph,$2y$10$rRJBrjatIW/hgxU6RxCYUeTfy4UOiBSxiXkydyTY0zJ7VsJ81VA7G,senior,https://lh3.googleusercontent.com/a/ACg8ocJKDITNK7_wC3HTTngcpKEvpiEbM1aB1DI_1NtCCHYRicUJyLM=s96-c
+6,Jr Amper,jbamper@bounty.com.ph,$2y$10$E4cmVW1yRSjvOWXwseQ0mexuIAfq9g1UojXCF5bqwBgaLEkdCMd9O,Staff,https://lh3.googleusercontent.com/a/ACg8ocKcUjfWzBS_LiwS4xp-iN50w40uh4an3oMORIyl6108NbO3LuZR=s96-c
+7,Mel-Jon Olegario,mlolegario@bounty.com.ph,$2y$10$L9u7joP5e2Ly5f9i23ic.ugZ/SRVwR1tVFg9sjZIEL9GKeyzm9THO,manager,https://lh3.googleusercontent.com/a/ACg8ocK6SYxTCuGgxYGVkD0-3CvYQtvGMvxR_bkicnIZKN5eD8GQqfLr=s96-c
+8,Anthony Dela Cruz,ajdelacruz@bounty.com.ph,$2y$10$r/P9eg6lcgqOiuQ7IUCKoOEgfpi0SV/y3mXslgzPqt01ay2b9k2te,senior,https://lh3.googleusercontent.com/a/ACg8ocKorChLpuxZqEi-7ti2sqSAsIl3CdqRonrHdxoNt1mdTBYIl9E=s96-c
+9,Mohamad Barodi,mabarodi@bounty.com.ph,$2y$10$sGlxYxqUll1/gkgdDuvwou0jaN8e.FnkztwZEkpyHYd4HdgPVoeRG,Staff,https://lh3.googleusercontent.com/a/ACg8ocLM74E8ppf39WL8oVsAHp35_zfYkH1-2X71iToGYWbX4ptOUPU=s96-c
+10,Baby Jean Estorba,bbestorba@bounty.com.ph,$2y$10$5Tlbo5euR4LDdNPzf.cFfOBHtAoKYg0TKM2xzO0v1P40mHVwd.hE2,senior supervisor,https://lh3.googleusercontent.com/a/ACg8ocKGwbqtRE1QwA0cQUQF0ZYWG6Rh2pOOFDHy-3GN16iun_8epg=s96-c
+11,Jeffrey Danguilan,jpdanguilan@bounty.com.ph,$2y$10$fSbidvuA4sBGjYe/yS71POIxsejv1VD6s45zzWe8LQxeLy1hsSHd2,senior supervisor,https://lh3.googleusercontent.com/a/ACg8ocJq-59uZkCqRuwvigpegyLnM5I8jiexrDaFUBR9fQTxwl9I6A0=s96-c
+12,Jerald Joaquin,jmjoaquin@bounty.com.ph,$2y$10$ctxdIL6HPbNf9Qd0mv013O004pGjccPK.zsNApIOAm8Tt7hd/ZNm6,senior,https://lh3.googleusercontent.com/a/ACg8ocIenyWB_FHFDKFcablShz_NZHKURSeceNrMjriAH0hGZv9Ofjs=s96-c
+13,Marichu Zafe,mazafe@bounty.com.ph,$2y$10$WU1hFIrbRAMYT7zMe1Mkn.h1iZrc4z0djcDZ0LxboSTK2SY4L4HCa,manager,https://lh3.googleusercontent.com/a/ACg8ocIfkiNYiZAMhdnM1_vxBtfkTP0Hb7GZ2vWyem_P-jCt1T9XCx0j=s96-c
+14,Justin Elizer Omaña,jaomana@bounty.com.ph,$2y$10$9A.5R.dt7XL6atlRi9pOaeuWgYJRyyWxi1e4byIV0tTBf3PJc0l7e,senior supervisor,https://lh3.googleusercontent.com/a/ACg8ocLxf2VO_AFrHBMXuGrInA6B8MRVdyLa9Ii-a4fEboJvcuUKLKY=s96-c
+15,Ryan Arizala,rcarizala@bounty.com.ph,$2y$12$b2X2ed.rQxiNAyH9tlPSvOT5oXCIlM60q1pO8jk/zrjMxs6nloCrS,Staff,https://lh3.googleusercontent.com/a/ACg8ocJxb6HQ60X8e3CwiidDHvOHHEdKsN7oPsP9YGESB8RnNxq47DI=s96-c
+16,Manuel Luis Clamor,mdclamor@bounty.com.ph,$2y$12$f2IppEWhspiKvG0q.CM5iu0gYplGpqTy1l4hEiSI7r90yoSVDUiGa,group manager,https://lh3.googleusercontent.com/a/ACg8ocJaVsMpuRcV0lf4TbQuuBKSjeC-lqHMF3Ynz3vwSAkHtVhLbQ=s96-c

@@ -1,0 +1,15 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\app",
+    "\\app\\Controllers",
+    "\\app\\Database\\Migrations",
+    "\\app\\Database\\Seeds",
+    "\\app\\Views",
+    "\\app\\Views\\auth",
+    "\\public",
+    "\\public\\assets"
+  ],
+  "SelectedNode": "\\writable",
+  "PreviewInSolutionExplorer": false
+}

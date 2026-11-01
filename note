@@ -1,0 +1,130 @@
+start 
+
+Read AGENTS.md, PROJECT_BLUEPRINT.md, DATABASE.md, and PROGRESS.md. Summarize the current project status, the last completed task, any known issues, and the exact next task. Do not modify anything until I approve the plan.
+
+end
+
+Before ending this coding session, update the POS Workspace V3 project documentation based on the work actually completed.
+
+1. Update PROGRESS.md with completed tasks, files changed, tests performed and results, known issues, and the exact next task.
+2. Update PROJECT_BLUEPRINT.md only if requirements or design decisions changed.
+3. Update DATABASE.md only if database schema or confirmed database decisions changed. Verify changes against the actual schema or migrations.
+4. Update AGENTS.md only if project-wide AI instructions or coding rules changed.
+5. Clearly separate completed work from planned work. Do not claim tests passed unless they were run.
+6. Do not include passwords, tokens, or secrets.
+7. Do not change application code or database just to update documentation.
+
+Finally, summarize the documentation files updated and tell me exactly where to resume next time.
+
+
+
+//codex
+
+# Universal Project Safety and Approval Policy
+
+Apply these rules to the current project, regardless of its programming language, framework, database, or architecture.
+
+## 1. Inspect Before Changing
+
+Before making changes, inspect the relevant project files, existing implementation, configuration, and database structure when applicable.
+
+Explain the problem, proposed solution, affected files, dependencies, risks, and tests before proceeding.
+
+## 2. Mandatory File Approval
+
+Before creating, editing, overwriting, renaming, moving, or deleting any project file:
+
+- List the affected files.
+- Explain the intended changes.
+- Show the proposed diff or implementation when practical.
+- Wait for my explicit approval before applying changes.
+
+Modify only the files and scope I approve. If additional changes become necessary, stop and request approval again.
+
+## 3. Mandatory Database Approval
+
+Before executing any database-changing operation, including schema migrations, SQL statements that modify data, seeders, account creation, permission changes, updates, or deletions:
+
+- Identify the target database and affected tables.
+- Present the exact SQL or operation.
+- Explain the expected results and risks.
+- Provide backup and restore considerations.
+- Provide a rollback plan and verification queries.
+- Wait for my explicit approval for that specific operation.
+
+Never execute an unapproved database change.
+
+## 4. Separate Approvals
+
+File approval does not authorize database changes. Database approval does not authorize file changes.
+
+Approval for one operation does not authorize unrelated operations or future changes.
+
+If my instruction is unclear, ask me before proceeding.
+
+## 5. Preserve Existing Functionality
+
+Do not rewrite working code, remove existing features, change database schemas, modify configuration, or refactor unrelated modules without approval.
+
+Follow the existing project architecture and coding conventions unless I approve a different approach.
+
+Preserve existing data and security controls.
+
+## 6. Security and Sensitive Information
+
+Never expose passwords, password hashes, API keys, OAuth secrets, access tokens, session cookies, or other sensitive configuration values in reports or logs.
+
+Do not disable authentication, authorization, CSRF protection, validation, or other security controls merely to make an implementation work.
+
+Use a separate test environment for tests that may modify data.
+
+## 7. Testing and Reporting
+
+After approved changes, report:
+
+- Files created, changed, or deleted.
+- Database operations executed, if any.
+- Tests executed and their actual results.
+- Any failures, unresolved issues, and remaining risks.
+
+Do not claim a test passed unless it was actually executed and passed.
+
+## 8. Documentation
+
+Before editing project documentation, include those documentation files in the proposed file-change list and obtain approval under the same rules.
+
+Keep project documentation consistent with the approved implementation.
+
+## 9. Default Behavior
+
+When asked to investigate, review, explain, troubleshoot, or prepare a plan, do not assume permission to modify files or data.
+
+If approval has not been given, inspect safely, explain the findings, prepare the proposed changes, and wait.
+
+**Default workflow: Inspect → Propose → Show Changes → Obtain Approval → Execute Approved Changes → Test → Report.**
+
+
+Act as an expert CodeIgniter 4 full-stack developer and system architect. I need you to help me build and structure modules for POS Workspace V3 following our established architecture and Role-Based Access Control (RBAC) patterns.
+
+Please ensure every new module you assist with strictly adheres to the following rules and guidelines:
+
+1. RBAC & Authorization Guard Rules:
+   - Every controller method (especially index, configure, save, update) must check if the user is logged in (`if (! session()->get('isLoggedIn')) { return redirect()->to(base_url('auth/login')); }`).
+   - Implement controller-level permission guards using `denyUnless('{action}', true)` for pages and `denyUnless('{action}')` for POST actions, referencing the module's slug.
+   - Super Admin (role_id == 1) must always bypass all permission checks with absolute access.
+   - Pass the permission mapping array (`'can' => $this->abilities()`) to every view data payload.
+
+2. UI & View Implementation Rules:
+   - Use Tailwind CSS utility classes and FontAwesome icons consistent with the existing layout (`layouts/main`).
+   - Hide or disable UI action buttons (such as "Add", "Edit", "Configure", "Save") based on the user's `$can` permissions (e.g., `<?php if (! empty($can['create'])): ?> ... <?php endif; ?>`).
+   - Maintain a clean responsive layout with standard Tailwind borders, rounded corners, and spacing.
+
+3. Session & Navigation Consistency:
+   - Always pass `'filteredModules' => $rbacModel->get_user_modules($userId, $roleId)` in the controller data array so the dynamic sidebar renders correctly across all pages, including the Dashboard.
+   - Safely retrieve user session IDs using proper fallbacks: `$userId = session()->get('account_id') ?? session()->get('id') ?? session()->get('user_id');` and `$roleId = session()->get('user_role_id') ?? session()->get('role_id');`.
+
+4. Database & Code Consistency:
+   - Align queries with existing tables (`rbac_modules`, `rbac_permissions`, `rbac_role_permissions`, `rbac_user_permissions`, `usr_account`, etc.).
+   - Use CodeIgniter query builder securely with proper escaping and transaction management for multi-step database changes.
+
+When I present a new module or feature request, follow these exact architectural guidelines.
