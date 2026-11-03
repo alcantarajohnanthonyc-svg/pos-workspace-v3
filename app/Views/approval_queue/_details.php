@@ -12,6 +12,7 @@ $canAct = ! empty($canAct);
 $can    = $can ?? [];
 $mode   = $mode ?? 'drawer';
 $logs   = $logs ?? [];
+$list   = $list ?? null;   // every line of an import / bulk request
 
 $id        = (int) ($req['id'] ?? 0);
 $status    = (string) ($req['status'] ?? 'pending');
@@ -111,7 +112,7 @@ $val = static function (string $v, string $cls): string {
     <section>
         <div class="mb-2 flex items-center justify-between">
             <h3 class="text-sm font-bold text-slate-800">
-                <?= $diff['mode'] === 'create' ? 'New record' : ($diff['mode'] === 'delete' ? 'Record to delete' : 'What changed') ?>
+                <?= $diff['mode'] === 'create' ? 'New record' : ($diff['mode'] === 'delete' ? 'Record to delete' : ($diff['mode'] === 'info' ? 'Request data' : 'What changed')) ?>
             </h3>
             <?php if ($diff['mode'] === 'update' && $diff['rows']): ?>
                 <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
@@ -162,11 +163,11 @@ $val = static function (string $v, string $cls): string {
                 </details>
             <?php endif; ?>
         <?php else: ?>
-            <?php $isCreate = $diff['mode'] === 'create'; ?>
+            <?php $isInfo = $diff['mode'] === 'info'; $isCreate = $diff['mode'] === 'create' || $isInfo; ?>
             <div class="overflow-x-auto rounded-xl border border-slate-200 bg-white">
                 <table class="w-full text-left text-xs">
                     <thead class="bg-slate-50 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                        <tr><th class="px-3 py-2">Field</th><th class="px-3 py-2"><?= $isCreate ? 'Value to add' : 'Value to remove' ?></th></tr>
+                        <tr><th class="px-3 py-2">Field</th><th class="px-3 py-2"><?= $isInfo ? 'Value' : ($isCreate ? 'Value to add' : 'Value to remove') ?></th></tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100">
                         <?php foreach ($diff['rows'] as $row): ?>
@@ -184,6 +185,43 @@ $val = static function (string $v, string $cls): string {
             </div>
         <?php endif; ?>
     </section>
+
+    <!-- ALL the lines of an import / bulk request -->
+    <?php if (! empty($list)): ?>
+        <section>
+            <?php $selectable = $canAct && ! empty($can['approve']) && ! empty($list['selectable']) && $list['count'] > 1; ?>
+            <div class="mb-2 flex items-center justify-between">
+                <h3 class="text-sm font-bold text-slate-800"><?= esc($list['title']) ?></h3>
+                <span data-aq-line-count class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600"><?= $selectable ? number_format((int) $list['count']) . ' of ' . number_format((int) $list['count']) . ' will be approved' : number_format((int) $list['count']) . ' line' . ($list['count'] === 1 ? '' : 's') ?></span>
+            </div>
+            <?php if ($selectable): ?>
+                <p class="mb-2 text-[11px] text-slate-500"><i class="fa-regular fa-square-check"></i> Untick the lines you do <b>not</b> want. Only the ticked lines are approved; the unticked ones are left out and the requester is told.</p>
+            <?php endif; ?>
+            <div class="max-h-[45vh] overflow-auto rounded-xl border border-slate-200 bg-white">
+                <table class="min-w-full text-left text-xs">
+                    <thead class="sticky top-0 z-10 bg-slate-50 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        <tr>
+                            <?php if ($selectable): ?><th class="w-8 px-3 py-2"><input type="checkbox" data-aq-line-all checked aria-label="Tick or untick all lines"></th><?php endif; ?>
+                            <?php foreach ($list['columns'] as $col): ?><th class="whitespace-nowrap px-3 py-2"><?= esc($col) ?></th><?php endforeach; ?>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        <?php foreach ($list['rows'] as $ri => $row): ?>
+                            <tr class="align-top">
+                                <?php if ($selectable): ?><td class="px-3 py-1.5"><input type="checkbox" data-aq-line value="<?= (int) $ri ?>" checked aria-label="Approve line <?= (int) $ri + 1 ?>"></td><?php endif; ?>
+                                <?php foreach ($row as $ci => $cell): ?>
+                                    <td class="px-3 py-1.5 <?= $ci === 0 ? 'font-mono text-slate-400' : 'text-slate-700' ?> <?= $ci === count($row) - 1 ? 'min-w-[160px]' : 'whitespace-nowrap' ?>"><?= esc($cell) ?></td>
+                                <?php endforeach; ?>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php if ($list['count'] > $list['shown']): ?>
+                <p class="mt-1 text-[11px] text-slate-500">Showing the first <?= number_format((int) $list['shown']) ?> of <?= number_format((int) $list['count']) ?> lines.</p>
+            <?php endif; ?>
+        </section>
+    <?php endif; ?>
 
     <!-- approval flow -->
     <section>

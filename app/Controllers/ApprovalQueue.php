@@ -55,7 +55,7 @@ class ApprovalQueue extends BaseController
         $pages = max(1, (int) ceil($total / self::PER_PAGE));
         $page  = min($page, $pages);
 
-        $rows = $this->listQuery($db, $uid, $super, $f, true)
+        $rows = $this->listQuery($db, $uid, $super, $f, true, false)
             ->orderBy('r.created_at', 'DESC')
             ->orderBy('r.id', 'DESC')
             ->limit(self::PER_PAGE, ($page - 1) * self::PER_PAGE)
@@ -152,7 +152,8 @@ class ApprovalQueue extends BaseController
             return $deny;
         }
         $body = $this->request->getJSON(true) ?: [];
-        $res  = $this->decide($id, 'approve', trim((string) ($body['note'] ?? '')));
+        $exclude = array_values(array_unique(array_map('intval', (array) ($body['exclude'] ?? []))));   // lines the approver unticked
+        $res     = $this->decide($id, 'approve', trim((string) ($body['note'] ?? '')), $exclude);
 
         return $this->jsonOut($res['body'], $res['code']);
     }
@@ -188,6 +189,12 @@ class ApprovalQueue extends BaseController
         $done   = 0;
         $failed = [];
         foreach ($ids as $id) {
+            $row = \Config\Database::connect()->table('approval_requests')->select('action_key, target_id')->where('id', $id)->get()->getRowArray();
+            if ($row && ($row['action_key'] === 'import' || ($row['target_id'] === null && in_array($row['action_key'], ['update', 'delete'], true)))) {
+                $failed[] = ['id' => $id, 'error' => 'This request has many lines. Open it and review the lines before approving.'];
+
+                continue;
+            }
             $res = $this->decide($id, 'approve', '');
             if ($res['code'] === 200) {
                 $done++;
@@ -202,7 +209,7 @@ class ApprovalQueue extends BaseController
     // ------------------------------------------------------------------ decision
 
     /** @return array{code:int, body:array<string,mixed>} */
-    private function decide(int $id, string $decision, string $note): array
+    private function decide(int $id, string $decision, string $note, array $exclude = []): array
     {
         $db    = \Config\Database::connect();
         $uid   = $this->userId();
@@ -237,7 +244,20 @@ class ApprovalQueue extends BaseController
                 return ['code' => 403, 'body' => ['ok' => false, 'error' => 'This request is not waiting for you.']];
             }
 
-            $outcome = '';   // approved | rejected | to_final (used for the notifications after the commit)
+            $outcome    = '';      // approved | rejected | to_final (used for the notifications after the commit)
+            $noticeNote = $note;   // the note + what the module did (e.g. "Imported 480 of 500 lines")
+
+            // the approver unticked some lines of an import / bulk request: only the ticked ones stay in the request
+            if ($decision === 'approve' && $exclude) {
+                $cut = $this->leaveOut($db, $req, $exclude);
+                if (is_string($cut)) {
+                    $db->transRollback();
+
+                    return ['code' => 422, 'body' => ['ok' => false, 'error' => $cut]];
+                }
+                $req        = $cut['req'];
+                $noticeNote = trim($note . ' ' . $cut['note']);
+            }
 
             if ($decision === 'reject') {
                 if ($who !== 'none') {
@@ -279,16 +299,18 @@ class ApprovalQueue extends BaseController
 
                 if ($final) {
                     // apply the approved change to its module (inside this transaction: if it cannot be applied, nothing is approved)
-                    $applyError = ApprovalApplier::apply($db, $req);
+                    $applySummary = null;
+                    $applyError   = ApprovalApplier::apply($db, $req, $applySummary);
                     if ($applyError !== null) {
                         $db->transRollback();
 
                         return ['code' => 422, 'body' => ['ok' => false, 'error' => $applyError]];
                     }
+                    $noticeNote = trim($noticeNote . ($applySummary ? ' ' . $applySummary : ''));
 
                     $db->table('approval_requests')->where('id', $id)->where('status', 'pending')
                         ->update(['status' => 'approved', 'decided_by' => $uid, 'decided_at' => $now, 'decision_note' => $note, 'applied_at' => $now, 'updated_at' => $now]);
-                    $this->log($db, $id, $uid, 'approved', $note);
+                    $this->log($db, $id, $uid, 'approved', $noticeNote);
                     $msg     = 'Request approved and applied.';
                     $outcome = 'approved';
                     // HOOK: notify the requester here (email / notification).
@@ -302,7 +324,7 @@ class ApprovalQueue extends BaseController
             }
             $db->transCommit();
 
-            $this->notifyDecision($req, $steps, $outcome, $note, $uid);
+            $this->notifyDecision($req, $steps, $outcome, $noticeNote, $uid);
 
             return ['code' => 200, 'body' => ['ok' => true, 'message' => $msg]];
         } catch (Throwable $e) {
@@ -311,6 +333,53 @@ class ApprovalQueue extends BaseController
 
             return ['code' => 500, 'body' => ['ok' => false, 'error' => 'Could not save the decision. Please try again.']];
         }
+    }
+
+    /**
+     * Remove the lines the approver unticked from an import / bulk request (they are NOT approved), keep the rest.
+     * The left-out lines are written in the request ("Lines Left Out") and in the notification to the requester.
+     *
+     * @param  list<int> $exclude zero-based positions of the lines to leave out
+     * @return array{req:array<string,mixed>,note:string}|string  the updated request, or an error message
+     */
+    private function leaveOut($db, array $req, array $exclude)
+    {
+        $after = json_decode((string) $req['payload_after'], true);
+        $key   = is_array($after) ? (is_array($after['rows'] ?? null) ? 'rows' : (is_array($after['items'] ?? null) ? 'items' : null)) : null;
+        if ($key === null) {
+            return 'This request has no lines to choose from.';
+        }
+
+        $kept = [];
+        $left = [];
+        foreach ($after[$key] as $i => $row) {
+            if (in_array((int) $i, $exclude, true)) {
+                $name   = (string) ($row['outlet_description'] ?? $row['outlet'] ?? ('line ' . ($i + 1)));
+                $left[] = $name . (! empty($row['store_code']) ? ' (' . $row['store_code'] . ')' : '');
+            } else {
+                $kept[] = $row;
+            }
+        }
+        if (! $left) {
+            return ['req' => $req, 'note' => ''];
+        }
+        if (! $kept) {
+            return 'Tick at least one line to approve, or reject the whole request.';
+        }
+
+        $after[$key] = $kept;
+        if ($key === 'rows') {
+            $after['lines'] = count($kept);
+        } else {
+            $after['count'] = count($kept);
+        }
+        $after['lines_left_out'] = count($left) . ': ' . implode(', ', array_slice($left, 0, 10)) . (count($left) > 10 ? ' …' : '');
+
+        $json = (string) json_encode($after, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $db->table('approval_requests')->where('id', (int) $req['id'])->update(['payload_after' => $json, 'updated_at' => date('Y-m-d H:i:s')]);
+        $req['payload_after'] = $json;
+
+        return ['req' => $req, 'note' => count($left) . ' line(s) were left out by the approver.'];
     }
 
     /**
@@ -361,8 +430,13 @@ class ApprovalQueue extends BaseController
         }
 
         // the requester may not have access to the Approval Queue, so he / she is sent to the module page
+        $requesterLink = Notifier::moduleUrl($slug);
+        if ($outcome === 'approved' && strtolower((string) $req['action_key']) === 'export') {
+            $toUser        = ['Your export was approved', 'Click here to download your file. The link works once and for 24 hours.' . $ref];
+            $requesterLink = $requesterLink . '/export?request=' . $id;
+        }
         if ($requester !== $actorId) {
-            Notifier::send($slug, $event, [$requester], $toUser[0], $toUser[1], Notifier::moduleUrl($slug));
+            Notifier::send($slug, $event, [$requester], $toUser[0], $toUser[1], $requesterLink);
         }
         Notifier::send($slug, $event, $approverIds, $toOthers[0], $toOthers[1], $link);
     }
@@ -443,7 +517,7 @@ class ApprovalQueue extends BaseController
         return $b;
     }
 
-    private function listQuery($db, int $uid, bool $super, array $f, bool $withSelect = false)
+    private function listQuery($db, int $uid, bool $super, array $f, bool $withSelect = false, bool $withPayload = true)
     {
         $mc = $this->modCols($db);
         $b  = $this->visible($db, $uid, $super)
@@ -452,7 +526,12 @@ class ApprovalQueue extends BaseController
             ->join('usr_account_info ui', 'ui.account_id = r.requester_id', 'left');
 
         if ($withSelect) {
-            $b->select('r.*, ua.email_workspace, ua.username, ui.avatar')
+            $cols = $withPayload
+                ? 'r.*'
+                : 'r.id, r.reference_no, r.module_slug, r.action_key, r.action_label, r.target_table, r.target_id, r.target_label, r.summary, r.requester_id, r.requester_title, r.scope_text, r.company_id, r.branch_id, r.priority, r.status, r.decided_by, r.decided_at, r.decision_note, r.applied_at, r.created_at, r.updated_at';
+            $b->select($cols . ', ua.email_workspace, ua.username, ui.avatar')
+              // an import, or a bulk update / delete, carries MANY lines: they must be reviewed in the details, not approved blindly
+              ->select("(r.action_key = 'import' OR (r.target_id IS NULL AND r.action_key IN ('update', 'delete'))) AS has_lines", false)
               ->select("TRIM(CONCAT(COALESCE(ui.first_name, ''), ' ', COALESCE(ui.last_name, ''))) AS requester_name", false)
               ->select($mc['name'] ? "m.{$mc['name']} AS module_name" : 'NULL AS module_name', false)
               ->select($mc['icon'] ? "m.{$mc['icon']} AS module_icon" : 'NULL AS module_icon', false);
@@ -556,6 +635,7 @@ class ApprovalQueue extends BaseController
             'req'    => $r,
             'steps'  => $steps,
             'diff'   => $this->buildDiff($r),
+            'list'   => $this->buildList($r),
             'canAct' => $this->canAct($r, $steps, $uid, $super),
             'logs'   => $logs,
         ];
@@ -578,7 +658,12 @@ class ApprovalQueue extends BaseController
         $labels = is_array($labels) ? $labels : [];
 
         $key  = strtolower((string) $r['action_key']);
-        $mode = $key === 'create' ? 'create' : ($key === 'delete' ? 'delete' : 'update');
+        $mode = ($after['mode'] ?? '') === 'bulk' ? 'info' : match ($key) {
+            'create'           => 'create',
+            'delete'           => 'delete',
+            'import', 'export' => 'info',   // no before / after: just the facts of the request
+            default            => 'update',
+        };
 
         $str = static function ($v): string {
             if ($v === null) {
@@ -603,7 +688,7 @@ class ApprovalQueue extends BaseController
             }
             $b = $str($before[$k] ?? null);
             $a = $str($after[$k] ?? null);
-            if ($mode === 'create') {
+            if ($mode === 'create' || $mode === 'info') {
                 $state = 'added';
             } elseif ($mode === 'delete') {
                 $state = 'removed';
@@ -623,6 +708,62 @@ class ApprovalQueue extends BaseController
         }
 
         return ['mode' => $mode, 'rows' => $rows, 'changed' => $changed];
+    }
+
+    /**
+     * Every line of a request that carries many records (an import, or a bulk update / delete), so the approver can
+     * check ALL of them, not only the first one.
+     *
+     * @return array{title:string,columns:list<string>,rows:list<list<string>>,count:int,shown:int}|null
+     */
+    private function buildList(array $r): ?array
+    {
+        $after = json_decode((string) ($r['payload_after'] ?? ''), true);
+        if (! is_array($after)) {
+            return null;
+        }
+        $key   = strtolower((string) $r['action_key']);
+        $cap   = 2000;
+        $rows  = [];
+        $cols  = [];
+        $title = '';
+        $count = 0;
+
+        if ($key === 'import' && is_array($after['rows'] ?? null)) {
+            $cols  = ['#', 'Store code', 'ERP code', 'Outlet', 'Branch', 'Ownership', 'Status', 'Date opened', 'Address'];
+            $title = 'All lines of this import';
+            $count = count($after['rows']);
+            foreach (array_slice($after['rows'], 0, $cap) as $i => $row) {
+                $rows[] = [
+                    (string) ($i + 1), (string) ($row['store_code'] ?? ''), (string) ($row['erp_code'] ?? ''), (string) ($row['outlet_description'] ?? ''),
+                    (string) ($row['branch'] ?? ('#' . ($row['branch_id'] ?? ''))), (string) ($row['ownership_type'] ?? ''), (string) ($row['store_status'] ?? ''),
+                    (string) ($row['date_opened'] ?? ''), (string) ($row['address'] ?? ''),
+                ];
+            }
+        } elseif (($after['mode'] ?? '') === 'bulk' && is_array($after['items'] ?? null)) {
+            $count = count($after['items']);
+            $label = ['store_status' => 'Status', 'ownership_type' => 'Ownership'];
+            if ($key === 'delete') {
+                $cols  = ['#', 'Store code', 'Outlet', 'Branch', 'Status'];
+                $title = 'All stores to delete';
+                foreach (array_slice($after['items'], 0, $cap) as $i => $it) {
+                    $rows[] = [(string) ($i + 1), (string) ($it['store_code'] ?? ''), (string) ($it['outlet'] ?? ''), (string) ($it['branch'] ?? ''), (string) ($it['status'] ?? '')];
+                }
+            } else {
+                $cols  = ['#', 'Store code', 'Outlet', 'Branch', 'Change'];
+                $title = 'All stores to update';
+                foreach (array_slice($after['items'], 0, $cap) as $i => $it) {
+                    $parts = [];
+                    foreach ((array) ($it['after'] ?? []) as $k => $v) {
+                        $old     = (string) (($it['before'][$k] ?? '') !== '' ? $it['before'][$k] : 'empty');
+                        $parts[] = ($label[$k] ?? ucfirst(str_replace('_', ' ', (string) $k))) . ': ' . $old . ' → ' . $v;
+                    }
+                    $rows[] = [(string) ($i + 1), (string) ($it['store_code'] ?? ''), (string) ($it['outlet'] ?? ''), (string) ($it['branch'] ?? ''), implode('; ', $parts)];
+                }
+            }
+        }
+
+        return $cols && $rows ? ['title' => $title, 'columns' => $cols, 'rows' => $rows, 'count' => $count, 'shown' => count($rows), 'selectable' => true] : null;
     }
 
     // ---------------------------------------------------------------- helpers

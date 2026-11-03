@@ -19,13 +19,15 @@ class Notifications extends BaseController
             return $this->response->setStatusCode(401)->setJSON(['ok' => false]);
         }
         $uid   = $this->userId();
+        $tab   = $this->request->getGet('tab') === 'read' ? 'read' : 'unread';
         $items = [];
-        foreach (Notifier::forBell($uid, 10) as $n) {
+        foreach (Notifier::forBell($uid, $tab === 'read' ? 15 : 10, $tab) as $n) {
             $n['url'] = base_url($n['url']);
             $items[]  = $n;
         }
 
-        return $this->response->setJSON(['ok' => true, 'unread' => Notifier::unreadCount($uid), 'items' => $items]);
+        // the badge ALWAYS counts only what is not read yet, whatever tab is open
+        return $this->response->setJSON(['ok' => true, 'tab' => $tab, 'unread' => Notifier::unreadCount($uid), 'items' => $items]);
     }
 
     public function open(int $id)

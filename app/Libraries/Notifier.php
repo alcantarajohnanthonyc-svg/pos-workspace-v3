@@ -241,18 +241,23 @@ class Notifier
     }
 
     /**
-     * Latest unread notifications in the shape the layout bell uses: title, message, time, url (+ id).
+     * Latest notifications in the shape the layout bell uses: title, message, time, url (+ id, event).
+     * $tab = 'unread' (the badge counts only these) or 'read' (already opened, shown dimmed in the Read tab).
      *
      * @return list<array<string,mixed>>
      */
-    public static function forBell(int $accountId, int $limit = 10): array
+    public static function forBell(int $accountId, int $limit = 10, string $tab = 'unread'): array
     {
         if ($accountId < 1) {
             return [];
         }
-        $rows = \Config\Database::connect()->table('notifications')
-            ->where('account_id', $accountId)->where('is_read', 0)
-            ->orderBy('id', 'DESC')->limit($limit)->get()->getResultArray();
+        $b = \Config\Database::connect()->table('notifications')
+            ->where('account_id', $accountId)->where('is_read', $tab === 'read' ? 1 : 0)
+            ->orderBy('id', 'DESC')->limit($limit);
+        if ($tab === 'read') {
+            $b->where('created_at >=', date('Y-m-d H:i:s', strtotime('-30 days')));   // the Read tab keeps the last 30 days
+        }
+        $rows = $b->get()->getResultArray();
 
         $out = [];
         foreach ($rows as $r) {

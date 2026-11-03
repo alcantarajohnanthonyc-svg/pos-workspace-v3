@@ -31,6 +31,29 @@
         el.classList.remove('hidden');
     }
 
+    /* tick / untick lines */
+    function lineCount(panel) {
+        var boxes = panel.querySelectorAll('[data-aq-line]');
+        var on = 0;
+        boxes.forEach(function (c) { if (c.checked) { on++; } });
+        var out = panel.querySelector('[data-aq-line-count]');
+        if (out) { out.textContent = on + ' of ' + boxes.length + ' will be approved'; }
+        var all = panel.querySelector('[data-aq-line-all]');
+        if (all) { all.checked = on === boxes.length; all.indeterminate = on > 0 && on < boxes.length; }
+    }
+    document.addEventListener('change', function (e) {
+        var t = e.target;
+        if (!t || !t.matches) { return; }
+        var panel = t.closest('[data-aq-panel]');
+        if (!panel) { return; }
+        if (t.matches('[data-aq-line-all]')) {
+            panel.querySelectorAll('[data-aq-line]').forEach(function (c) { c.checked = t.checked; });
+            lineCount(panel);
+        } else if (t.matches('[data-aq-line]')) {
+            lineCount(panel);
+        }
+    });
+
     document.addEventListener('click', function (e) {
         var btn = e.target.closest ? e.target.closest('[data-aq-decide]') : null;
         if (!btn) { return; }
@@ -43,17 +66,30 @@
         var errEl    = panel.querySelector('[data-aq-error]');
         if (errEl) { errEl.classList.add('hidden'); }
 
+        /* lines the approver unticked (import / bulk requests) */
+        var lineBoxes = panel.querySelectorAll('[data-aq-line]');
+        var exclude   = [];
+        lineBoxes.forEach(function (c) { if (!c.checked) { exclude.push(parseInt(c.value, 10)); } });
+        if (decision === 'approve' && lineBoxes.length && exclude.length === lineBoxes.length) {
+            showError(panel, 'Tick at least one line to approve, or reject the whole request.');
+            return;
+        }
+
         if (decision === 'reject' && note === '') {
             showError(panel, 'Please write the reason for rejecting this request.');
             if (noteEl) { noteEl.focus(); }
             return;
         }
-        if (decision === 'approve' && !window.confirm('Approve this request?')) { return; }
+        var ask = 'Approve this request?';
+        if (decision === 'approve' && exclude.length) {
+            ask = 'Approve ' + (lineBoxes.length - exclude.length) + ' of ' + lineBoxes.length + ' lines? ' + exclude.length + ' will be left out.';
+        }
+        if (decision === 'approve' && !window.confirm(ask)) { return; }
 
         var buttons = panel.querySelectorAll('[data-aq-decide]');
         buttons.forEach(function (b) { b.disabled = true; });
 
-        post(decision + '/' + id, { note: note }).then(function (j) {
+        post(decision + '/' + id, { note: note, exclude: decision === 'approve' ? exclude : [] }).then(function (j) {
             if (j && j.ok) {
                 window.location.reload();
                 return;

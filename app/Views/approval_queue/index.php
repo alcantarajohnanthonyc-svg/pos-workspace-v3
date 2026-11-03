@@ -157,9 +157,10 @@ foreach ($rows as $r) {
                         $person  = aq_person_name($r);
                         [$d, $t] = aq_when($r['created_at'] ?? null);
                         $actable = ! empty($r['can_act']) && ! empty($can['approve']);
+                        $lines   = ! empty($r['has_lines']);   // import / bulk: review the lines first (no quick approve, no bulk approve)
                         ?>
                         <tr class="transition-colors hover:bg-slate-50/70">
-                            <td class="px-4 py-3"><input type="checkbox" class="aq-check rounded border-slate-300" value="<?= $rid ?>" <?= $actable ? '' : 'disabled' ?> aria-label="Select <?= esc($r['reference_no'], 'attr') ?>"></td>
+                            <td class="px-4 py-3"><input type="checkbox" class="aq-check rounded border-slate-300" value="<?= $rid ?>" <?= ($actable && ! $lines) ? '' : 'disabled' ?> aria-label="Select <?= esc($r['reference_no'], 'attr') ?>"></td>
                             <td class="px-3 py-3">
                                 <div class="flex items-center gap-2.5">
                                     <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white <?= aq_module_bg((string) $r['module_slug']) ?>"><i class="<?= esc(aq_module_icon($r['module_icon'] ?? null), 'attr') ?> text-[13px]"></i></span>
@@ -183,7 +184,7 @@ foreach ($rows as $r) {
                             <td class="px-3 py-3">
                                 <div class="flex items-center justify-end gap-1.5">
                                     <button type="button" data-aq-view="<?= $rid ?>" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600">View</button>
-                                    <button type="button" data-aq-menu="<?= $rid ?>" data-ref="<?= esc($r['reference_no'], 'attr') ?>" data-actable="<?= $actable ? '1' : '0' ?>" aria-label="More actions" aria-haspopup="true" class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"><i class="fa-solid fa-ellipsis-vertical"></i></button>
+                                    <button type="button" data-aq-menu="<?= $rid ?>" data-ref="<?= esc($r['reference_no'], 'attr') ?>" data-actable="<?= ($actable && ! $lines) ? '1' : '0' ?>" aria-label="More actions" aria-haspopup="true" class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"><i class="fa-solid fa-ellipsis-vertical"></i></button>
                                 </div>
                             </td>
                         </tr>
@@ -217,7 +218,7 @@ foreach ($rows as $r) {
 
 <!-- request details (centered dialog) -->
 <div id="aq-drawer" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true" aria-labelledby="aq-drawer-title">
-    <div class="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+    <div class="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
         <header class="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
             <h2 id="aq-drawer-title" class="text-base font-bold text-slate-800">Request Details</h2>
             <button type="button" id="aq-close" class="flex h-8 w-8 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>

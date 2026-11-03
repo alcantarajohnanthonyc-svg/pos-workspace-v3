@@ -25,6 +25,11 @@ $importMax  = $importMax ?? 5000;
 $pending       = (array) ($pending ?? []);                                  // store id => action => [ref, by, when]
 $pendingNew    = (array) ($pendingNew ?? []) + ['total' => 0, 'items' => []];   // pending "new store" requests
 $pendingStores = (int) ($pendingStores ?? 0);                               // stores with a pending update / delete
+$bulkUpdateNeedsApproval = ! empty($bulkUpdateNeedsApproval);
+$bulkDeleteNeedsApproval = ! empty($bulkDeleteNeedsApproval);
+$canBulk = ! empty($can['update']) || ! empty($can['delete']);                // checkbox column + bulk bar
+$importNeedsApproval = ! empty($importNeedsApproval);                       // Import needs the administrator's approval
+$exportNeedsApproval = ! empty($exportNeedsApproval);                       // Export needs the administrator's approval
 
 $flashSuccess = session()->getFlashdata('success');
 $flashError   = session()->getFlashdata('error');
@@ -54,7 +59,8 @@ asort($companies);
 $branchJson   = array_map(static fn ($b) => ['id' => (int) $b['id'], 'name' => (string) $b['name'], 'company_id' => (int) ($b['company_id'] ?? 0)], $branches);
 $activeFilter = (int) ($filters['company'] > 0) + (int) ($filters['branch'] > 0) + (int) ($filters['status'] !== '');
 $statCard = ['fa-store', 'fa-circle-check', 'fa-circle-pause', 'fa-circle-xmark', 'fa-circle-question'];
-$qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q' => $filters['q'], 'company' => $filters['company'], 'branch' => $filters['branch'], 'status' => $filters['status'], 'pending' => $filters['pending']], $extra), static fn ($v) => $v !== '' && $v !== 0 && $v !== null));
+$perChoices = [5, 10, 25, 50, 100];
+$qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q' => $filters['q'], 'company' => $filters['company'], 'branch' => $filters['branch'], 'status' => $filters['status'], 'pending' => $filters['pending'], 'per_page' => $perPage], $extra), static fn ($v) => $v !== '' && $v !== 0 && $v !== null));
 ?>
 
 <div class="space-y-4">
@@ -68,13 +74,16 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
 
     <!-- Header -->
     <div class="flex flex-wrap items-center justify-between gap-3">
-        <div>
-            <h1 class="text-lg font-bold text-slate-800">Store Details</h1>
-            <p class="text-xs text-slate-500">Stores, their branch and company.</p>
+        <div class="flex items-center gap-3">
+            <span class="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 text-xl text-white shadow-sm"><i class="fa-solid fa-store"></i></span>
+            <div>
+                <h1 class="text-lg font-bold leading-tight text-slate-800">Store Details</h1>
+                <p class="text-xs text-slate-500">Stores, their branch and company.</p>
+            </div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
             <?php if (! empty($can['export'])): ?>
-                <a href="<?= base_url('store-details/export') . ($qs([]) ? '?' . $qs([]) : '') ?>" data-loading="Preparing export..." data-loading-for="2500" class="<?= $btnGhost ?>"><i class="fa-solid fa-file-export"></i> Export</a>
+                <a href="<?= base_url('store-details/export') . ($qs([]) ? '?' . $qs([]) : '') ?>" data-loading="<?= $exportNeedsApproval ? 'Sending request...' : 'Preparing export...' ?>" data-loading-for="2500" class="<?= $btnGhost ?>" <?= $exportNeedsApproval ? 'title="Needs the administrator\'s approval before the file can be downloaded"' : '' ?>><i class="fa-solid fa-file-export"></i> <?= $exportNeedsApproval ? 'Request export' : 'Export' ?></a>
             <?php endif; ?>
             <?php if (! empty($can['import'])): ?>
                 <button type="button" data-open="modal-import" class="<?= $btnGhost ?>"><i class="fa-solid fa-file-import"></i> Import</button>
@@ -114,21 +123,28 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
         </div>
     <?php endif; ?>
 
-    <!-- Stats: "All" tab + one tab per status. When a status is selected, the other statuses are hidden. -->
+    <!-- Stats: ONLY the number of stores (all, and per status). Approval counts are not shown here. -->
     <?php
     $statAll    = array_sum(array_map('intval', (array) $stats['by']));   // stable total: search/company/branch applied, status ignored
     $statSelect = $filters['status'];
     $allLink    = $qs(['status' => '', 'page' => null]);
+    $tone = static function (string $s): array {   // [card, icon tile]
+        $k = strtolower(trim($s));
+        if ($k === '' || $k === 'no status') { return ['border-slate-200 bg-slate-50/70', 'bg-slate-200 text-slate-600']; }
+        if (preg_match('/clos|in-?active|terminat|stop/', $k)) { return ['border-rose-200 bg-rose-50/60', 'bg-rose-100 text-rose-600']; }
+        if (preg_match('/open|active|operat/', $k)) { return ['border-emerald-200 bg-emerald-50/60', 'bg-emerald-100 text-emerald-600']; }
+        return ['border-violet-200 bg-violet-50/60', 'bg-violet-100 text-violet-600'];
+    };
     ?>
-    <div class="flex flex-wrap items-stretch gap-3">
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
 
         <!-- All stores (click = clear the status filter) -->
         <a href="<?= base_url('store-details') . ($allLink !== '' ? '?' . esc($allLink) : '') ?>"
-           class="flex min-w-[170px] items-center gap-3 rounded-xl border bg-white px-4 py-3 transition-colors hover:bg-slate-50 <?= $statSelect === '' ? 'border-emerald-500 ring-2 ring-emerald-500/20' : 'border-slate-200' ?>">
-            <span class="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-slate-600"><i class="fa-solid fa-store"></i></span>
+           class="flex items-center gap-3 rounded-2xl border px-4 py-3.5 transition-shadow hover:shadow-md border-emerald-200 bg-emerald-50/60 <?= $statSelect === '' ? 'ring-2 ring-emerald-500/30' : '' ?>">
+            <span class="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-100 text-lg text-emerald-600"><i class="fa-solid fa-store"></i></span>
             <div>
-                <div class="text-xl font-bold leading-none text-slate-800"><?= number_format($statAll) ?></div>
-                <div class="mt-1 text-[11px] uppercase tracking-wide text-slate-500">All stores</div>
+                <div class="text-2xl font-bold leading-none text-slate-800"><?= number_format($statAll) ?></div>
+                <div class="mt-1 text-xs font-medium text-slate-500">All Stores</div>
             </div>
         </a>
 
@@ -136,36 +152,21 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
             <?php
             $stActive = $statSelect !== '' && $statSelect === $stName;
             if ($statSelect !== '' && ! $stActive) { continue; }          // a status is selected -> hide the other statuses
-            $stPct  = $statAll > 0 ? round(((int) $stCount) / $statAll * 100) : 0;
             $stLink = $stActive ? '' : ($stName === 'No status' ? '' : $stName);
+            [$cardCls, $tileCls] = $tone((string) $stName);
             ?>
             <a href="<?= base_url('store-details') . '?' . esc($qs(['status' => $stLink, 'page' => null])) ?>"
-               class="flex min-w-[190px] items-center gap-3 rounded-xl border bg-white px-4 py-3 transition-colors hover:bg-slate-50 <?= $stActive ? 'border-emerald-500 ring-2 ring-emerald-500/20' : 'border-slate-200' ?>">
-                <span class="flex h-9 w-9 items-center justify-center rounded-lg <?= $badge($stName === 'No status' ? '' : $stName) ?>"><i class="fa-solid fa-circle-dot"></i></span>
+               class="flex items-center gap-3 rounded-2xl border px-4 py-3.5 transition-shadow hover:shadow-md <?= $cardCls ?> <?= $stActive ? 'ring-2 ring-emerald-500/30' : '' ?>">
+                <span class="flex h-11 w-11 items-center justify-center rounded-xl text-lg <?= $tileCls ?>"><i class="fa-solid fa-circle-dot"></i></span>
                 <div class="min-w-0">
-                    <div class="flex items-baseline gap-2">
-                        <span class="text-xl font-bold leading-none text-slate-800"><?= number_format((int) $stCount) ?></span>
-                        <span class="text-[11px] font-semibold text-slate-400"><?= $stPct ?>%</span>
-                    </div>
-                    <div class="mt-1 truncate text-[11px] uppercase tracking-wide text-slate-500">
+                    <div class="text-2xl font-bold leading-none text-slate-800"><?= number_format((int) $stCount) ?></div>
+                    <div class="mt-1 truncate text-xs font-medium text-slate-500">
                         <?= esc($stName) ?>
                         <?php if ($stActive): ?><i class="fa-solid fa-xmark ml-1" title="Clear"></i><?php endif; ?>
                     </div>
                 </div>
             </a>
         <?php endforeach; ?>
-
-        <?php if ($pendingStores > 0 || ! empty($filters['pending'])): ?>
-            <!-- Pending approval (click = show only the stores that have a request waiting) -->
-            <a href="<?= base_url('store-details') . '?' . esc($qs(['pending' => $filters['pending'] ? 0 : 1, 'page' => null])) ?>"
-               class="flex min-w-[190px] items-center gap-3 rounded-xl border bg-white px-4 py-3 transition-colors hover:bg-amber-50/50 <?= $filters['pending'] ? 'border-amber-500 ring-2 ring-amber-500/20' : 'border-amber-200' ?>">
-                <span class="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 text-amber-600"><i class="fa-regular fa-clock"></i></span>
-                <div>
-                    <div class="text-xl font-bold leading-none text-slate-800"><?= number_format($pendingStores) ?></div>
-                    <div class="mt-1 text-[11px] uppercase tracking-wide text-slate-500">Pending approval <?php if ($filters['pending']): ?><i class="fa-solid fa-xmark ml-1" title="Clear"></i><?php endif; ?></div>
-                </div>
-            </a>
-        <?php endif; ?>
     </div>
 
     <!-- Search + Filters (the filter modal lives inside this form, so Search and Apply send the same GET) -->
@@ -250,12 +251,29 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
     })();
     </script>
 
+    <!-- Bulk bar: appears when stores are ticked -->
+    <?php if ($canBulk): ?>
+        <div id="sd-bulk" class="hidden flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs text-emerald-900" role="region" aria-label="Selected stores">
+            <span><strong id="sd-bulk-n">0</strong> selected on this page</span>
+            <div class="flex flex-wrap items-center gap-2">
+                <?php if (! empty($can['update'])): ?>
+                    <button type="button" data-open="modal-bulk-update" class="<?= $btnGhost ?>"><i class="fa-solid fa-pen-to-square"></i> Change status / update</button>
+                <?php endif; ?>
+                <?php if (! empty($can['delete'])): ?>
+                    <button type="button" data-open="modal-bulk-delete" class="<?= $btnGhost ?> text-rose-600"><i class="fa-solid fa-trash"></i> Delete selected</button>
+                <?php endif; ?>
+                <button type="button" id="sd-bulk-clear" class="text-xs font-semibold text-emerald-800 underline">Clear</button>
+            </div>
+        </div>
+    <?php endif; ?>
+
     <!-- Table -->
     <div class="overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div class="overflow-x-auto">
             <table class="min-w-full text-left text-xs">
                 <thead class="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
                     <tr>
+                        <?php if ($canBulk): ?><th class="w-10 px-3 py-2.5"><input type="checkbox" id="sd-all" class="rounded border-slate-300" aria-label="Select all stores on this page"></th><?php endif; ?>
                         <th class="px-3 py-2.5">Store</th>
                         <th class="px-3 py-2.5">Codes</th>
                         <th class="px-3 py-2.5">Branch / Company</th>
@@ -273,6 +291,11 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
                         $pDel = $pp['delete'] ?? null;
                         ?>
                         <tr class="hover:bg-slate-50 align-top <?= $pp ? 'bg-amber-50/40' : '' ?>">
+                            <?php if ($canBulk): ?>
+                                <td class="px-3 py-2.5">
+                                    <input type="checkbox" class="sd-check rounded border-slate-300" value="<?= (int) $r['id'] ?>" <?= $pp ? 'disabled title="Waiting for approval"' : '' ?> aria-label="Select <?= esc($r['outlet_description'], 'attr') ?>">
+                                </td>
+                            <?php endif; ?>
                             <td class="px-3 py-2.5">
                                 <div class="font-semibold text-slate-800"><?= esc($r['outlet_description']) ?></div>
                                 <?php if (! empty($r['address'])): ?><div class="mt-0.5 max-w-[260px] truncate text-[11px] text-slate-400" title="<?= esc($r['address'], 'attr') ?>"><?= esc($r['address']) ?></div><?php endif; ?>
@@ -285,13 +308,13 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
                                     <?php endif; ?>
                                 <?php endforeach; ?>
                             </td>
-                            <td class="px-3 py-2.5 font-mono text-[11px] text-slate-600">
-                                <div><?= esc($r['store_code'] ?? '—') ?></div>
-                                <div class="text-slate-400"><?= esc($r['erp_code'] ?? '') ?></div>
+                            <td class="px-3 py-2.5 font-mono text-[11px]">
+                                <span class="inline-block rounded bg-sky-50 px-1.5 py-0.5 text-slate-700"><?= esc($r['store_code'] ?? '—') ?></span>
+                                <?php if (! empty($r['erp_code'])): ?><br><span class="mt-0.5 inline-block rounded bg-sky-50 px-1.5 py-0.5 text-slate-500"><?= esc($r['erp_code']) ?></span><?php endif; ?>
                             </td>
                             <td class="px-3 py-2.5">
                                 <div class="text-slate-700"><?= esc($r['branch_name'] ?? '—') ?></div>
-                                <div class="text-[11px] text-slate-400"><?= esc($r['company_name'] ?? '') ?></div>
+                                <div class="text-[11px] text-sky-600"><?= esc($r['company_name'] ?? '') ?></div>
                             </td>
                             <td class="px-3 py-2.5 text-slate-600"><?= esc($r['ownership_type'] ?? '—') ?></td>
                             <td class="px-3 py-2.5"><span class="inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold <?= $badge($r['store_status'] ?? '') ?>"><?= esc($r['store_status'] ?: '—') ?></span></td>
@@ -325,26 +348,202 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
                         </tr>
                     <?php endforeach; ?>
                     <?php if (! $rows): ?>
-                        <tr><td colspan="8" class="px-3 py-10 text-center text-slate-400">No stores found.</td></tr>
+                        <tr><td colspan="9" class="px-3 py-10 text-center text-slate-400">No stores found.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
         </div>
 
-        <div class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-3 py-2.5 text-xs text-slate-500">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-3 py-3 text-xs text-slate-500">
             <span>
-                <?= $total ? number_format(($page - 1) * $perPage + 1) . '–' . number_format(min($page * $perPage, $total)) . ' of ' . number_format($total) : '0 results' ?>
+                <?= $total ? 'Showing ' . number_format(($page - 1) * $perPage + 1) . ' to ' . number_format(min($page * $perPage, $total)) . ' of ' . number_format($total) . ' stores' : '0 stores' ?>
             </span>
-            <?php if ($pages > 1): ?>
-                <div class="flex items-center gap-1">
-                    <?php if ($page > 1): ?><a class="<?= $btnGhost ?>" href="?<?= esc($qs(['page' => $page - 1])) ?>">Prev</a><?php endif; ?>
-                    <span class="px-2">Page <?= $page ?> / <?= $pages ?></span>
-                    <?php if ($page < $pages): ?><a class="<?= $btnGhost ?>" href="?<?= esc($qs(['page' => $page + 1])) ?>">Next</a><?php endif; ?>
-                </div>
-            <?php endif; ?>
+            <div class="flex flex-wrap items-center gap-3">
+                <label class="flex items-center gap-1.5">
+                    <span class="sr-only">Rows per page</span>
+                    <select id="sd-per" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700 focus:border-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-600/20">
+                        <?php foreach ($perChoices as $pc): ?>
+                            <option value="<?= $pc ?>" <?= (int) $perPage === $pc ? 'selected' : '' ?>><?= $pc ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <span>per page</span>
+                </label>
+                <?php if ($pages > 1): ?>
+                    <?php
+                    $pq   = static fn (int $n) => $qs(['page' => $n]);
+                    $show = array_unique(array_filter([1, $page - 1, $page, $page + 1, $pages], static fn ($n) => $n >= 1 && $n <= $pages));
+                    sort($show);
+                    $pageBtn = 'flex h-8 min-w-8 items-center justify-center rounded-lg border px-2 text-xs font-semibold';
+                    ?>
+                    <nav class="flex items-center gap-1" aria-label="Pagination">
+                        <?php if ($page > 1): ?><a class="<?= $pageBtn ?> border-slate-300 bg-white text-slate-700 hover:bg-slate-50" href="?<?= esc($pq($page - 1)) ?>" aria-label="Previous page"><i class="fa-solid fa-chevron-left text-[10px]"></i></a><?php endif; ?>
+                        <?php $prev = 0; foreach ($show as $n): ?>
+                            <?php if ($n - $prev > 1): ?><span class="px-1 text-slate-400">…</span><?php endif; ?>
+                            <a class="<?= $pageBtn ?> <?= $n === $page ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50' ?>" href="?<?= esc($pq($n)) ?>" <?= $n === $page ? 'aria-current="page"' : '' ?>><?= $n ?></a>
+                            <?php $prev = $n; ?>
+                        <?php endforeach; ?>
+                        <?php if ($page < $pages): ?><a class="<?= $pageBtn ?> border-slate-300 bg-white text-slate-700 hover:bg-slate-50" href="?<?= esc($pq($page + 1)) ?>" aria-label="Next page"><i class="fa-solid fa-chevron-right text-[10px]"></i></a><?php endif; ?>
+                    </nav>
+                <?php endif; ?>
+            </div>
         </div>
     </div>
 </div>
+
+<?php if ($canBulk): ?>
+<?php if (! empty($can['update'])): ?>
+<!-- Bulk update -->
+<div id="modal-bulk-update" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true" aria-labelledby="bu-title">
+    <div class="w-full max-w-md rounded-xl bg-white shadow-xl">
+        <div class="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+            <h2 id="bu-title" class="text-sm font-bold text-slate-800">Update <span class="sd-bulk-count">0</span> selected store(s)</h2>
+            <button type="button" data-close class="<?= $closeBtn ?>" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="space-y-3 px-5 py-4">
+            <p class="text-xs text-slate-500">Fill only what you want to change. Empty fields stay as they are.</p>
+            <div>
+                <label for="bu-status" class="<?= $fLabel ?>">Status</label>
+                <input id="bu-status" list="dl-bu-status" maxlength="50" placeholder="e.g. OPEN" class="<?= $fInput ?>">
+                <datalist id="dl-bu-status"><?php foreach ($statuses as $s): ?><option value="<?= esc($s, 'attr') ?>"><?php endforeach; ?></datalist>
+            </div>
+            <div>
+                <label for="bu-own" class="<?= $fLabel ?>">Ownership type</label>
+                <input id="bu-own" list="dl-bu-own" maxlength="100" class="<?= $fInput ?>">
+                <datalist id="dl-bu-own"><?php foreach ($ownerships as $o): ?><option value="<?= esc($o, 'attr') ?>"><?php endforeach; ?></datalist>
+            </div>
+            <?php if (! empty($bulkUpdateNeedsApproval)): ?>
+                <p class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"><i class="fa-regular fa-clock"></i> This needs the administrator's approval. Nothing changes until it is approved.</p>
+            <?php endif; ?>
+            <p id="bu-err" class="hidden rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700" role="alert"></p>
+        </div>
+        <div class="flex justify-end gap-2 border-t border-slate-100 px-5 py-3">
+            <button type="button" data-close class="<?= $btnGhost ?>">Cancel</button>
+            <button type="button" id="bu-go" class="<?= $btnPrim ?>"><i class="fa-solid fa-check"></i> <?= ! empty($bulkUpdateNeedsApproval) ? 'Send for approval' : 'Apply to selected' ?></button>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
+
+<?php if (! empty($can['delete'])): ?>
+<!-- Bulk delete -->
+<div id="modal-bulk-delete" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true" aria-labelledby="bd-title">
+    <div class="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl">
+        <h2 id="bd-title" class="text-sm font-bold text-slate-800">Delete <span class="sd-bulk-count">0</span> store(s)?</h2>
+        <p class="mt-2 text-xs text-slate-600">This permanently deletes the selected stores.<?= ! empty($bulkDeleteNeedsApproval) ? ' It needs the administrator\'s approval first.' : '' ?></p>
+        <p id="bd-err" class="mt-2 hidden rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700" role="alert"></p>
+        <div class="mt-4 flex justify-end gap-2">
+            <button type="button" data-close class="<?= $btnGhost ?>">Cancel</button>
+            <button type="button" id="bd-go" class="<?= $btnDanger ?>"><i class="fa-solid fa-trash"></i> <?= ! empty($bulkDeleteNeedsApproval) ? 'Send for approval' : 'Delete' ?></button>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
+
+<script>
+(function () {
+    var CFG = <?= json_encode([
+        'updateUrl'  => base_url('store-details/bulk/update'),
+        'deleteUrl'  => base_url('store-details/bulk/delete'),
+        'csrfHeader' => csrf_header(),
+        'token'      => csrf_hash(),
+        'canQueue'   => ! empty($canQueue),
+        'queueUrl'   => base_url('approval-queue'),
+    ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    var token = CFG.token;
+    function $(id) { return document.getElementById(id); }
+    function checks() { return Array.prototype.slice.call(document.querySelectorAll('.sd-check:not(:disabled)')); }
+    function selected() { return checks().filter(function (c) { return c.checked; }).map(function (c) { return parseInt(c.value, 10); }); }
+
+    var bar = $('sd-bulk'), all = $('sd-all');
+    function refresh() {
+        var n = selected().length;
+        $('sd-bulk-n').textContent = n;
+        document.querySelectorAll('.sd-bulk-count').forEach(function (s) { s.textContent = n; });
+        bar.classList.toggle('hidden', n === 0);
+        bar.classList.toggle('flex', n > 0);
+        if (all) { all.checked = n > 0 && n === checks().length; all.indeterminate = n > 0 && n < checks().length; }
+    }
+    if (all) { all.addEventListener('change', function () { checks().forEach(function (c) { c.checked = all.checked; }); refresh(); }); }
+    document.addEventListener('change', function (e) { if (e.target.classList && e.target.classList.contains('sd-check')) { refresh(); } });
+    $('sd-bulk-clear').addEventListener('click', function () { checks().forEach(function (c) { c.checked = false; }); refresh(); });
+
+    // rows per page
+    var per = $('sd-per');
+    if (per) {
+        per.addEventListener('change', function () {
+            var u = new URL(window.location.href);
+            u.searchParams.set('per_page', per.value);
+            u.searchParams.delete('page');
+            window.location.href = u.toString();
+        });
+    }
+
+    function post(url, body) {
+        var h = { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' };
+        h[CFG.csrfHeader] = token;
+        return fetch(url, { method: 'POST', headers: h, body: JSON.stringify(body), credentials: 'same-origin' }).then(function (res) {
+            return res.json().catch(function () { return {}; }).then(function (j) {
+                if (j && j.csrf) { token = j.csrf; }
+                if (!res.ok || !j.ok) { throw new Error((j && j.error) || 'Something went wrong. Please try again.'); }
+                return j;
+            });
+        });
+    }
+
+    // the same "Sent for approval" popup the server shows, built here because the answer came as JSON
+    function popup(j) {
+        var d = document.createElement('dialog');
+        d.className = 'm-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border-0 p-0 shadow-2xl backdrop:bg-slate-900/50';
+        var box = document.createElement('div'); box.className = 'p-6 text-center';
+        function t(tag, cls, text) { var n = document.createElement(tag); n.className = cls; n.textContent = text; return n; }
+        var ic = t('span', 'mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-2xl text-amber-600', ''); ic.innerHTML = '<i class="fa-regular fa-clock"></i>';
+        box.appendChild(ic);
+        box.appendChild(t('h2', 'text-lg font-bold text-slate-800', 'Sent for approval'));
+        var verb = j.action === 'delete' ? 'delete' : 'update';
+        box.appendChild(t('p', 'mt-2 text-sm leading-relaxed text-slate-600', 'Your request to ' + verb + ' ' + j.name + ' needs an administrator\'s approval. Nothing has changed yet.' + (j.skipped ? ' (' + j.skipped + ' skipped: already waiting for approval or no change.)' : '')));
+        var dl = t('dl', 'mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200 text-left text-xs', '');
+        [['Reference', j.ref], ['Waiting for', j.approver], ['Status', 'Pending approval']].forEach(function (r) {
+            if (!r[1]) { return; }
+            var row = t('div', 'flex justify-between gap-4 px-3.5 py-2.5', '');
+            row.appendChild(t('dt', 'text-slate-500', r[0])); row.appendChild(t('dd', 'font-semibold text-slate-800', r[1])); dl.appendChild(row);
+        });
+        box.appendChild(dl);
+        var ok = t('button', 'mt-5 rounded-lg bg-emerald-600 px-5 py-2 text-xs font-semibold text-white hover:bg-emerald-700', 'Got it');
+        ok.type = 'button'; ok.addEventListener('click', function () { d.close(); window.location.reload(); });
+        box.appendChild(ok); d.appendChild(box); document.body.appendChild(d);
+        d.addEventListener('cancel', function () { window.location.reload(); });
+        d.showModal(); ok.focus();
+    }
+
+    function done(j) {
+        if (j.queued) { popup(j); } else { window.location.reload(); }
+    }
+    function fail(errId, btn, e) {
+        var el = $(errId); el.textContent = e.message; el.classList.remove('hidden'); btn.disabled = false;
+    }
+
+    var bu = $('bu-go');
+    if (bu) {
+        bu.addEventListener('click', function () {
+            $('bu-err').classList.add('hidden');
+            var changes = { store_status: $('bu-status').value.trim(), ownership_type: $('bu-own').value.trim() };
+            if (!changes.store_status && !changes.ownership_type) { fail('bu-err', bu, new Error('Fill the status or the ownership you want to set.')); return; }
+            bu.disabled = true;
+            post(CFG.updateUrl, { ids: selected(), changes: changes }).then(done).catch(function (e) { fail('bu-err', bu, e); });
+        });
+    }
+    var bd = $('bd-go');
+    if (bd) {
+        bd.addEventListener('click', function () {
+            $('bd-err').classList.add('hidden');
+            bd.disabled = true;
+            post(CFG.deleteUrl, { ids: selected() }).then(done).catch(function (e) { fail('bd-err', bd, e); });
+        });
+    }
+    refresh();
+})();
+</script>
+<?php endif; ?>
 
 <?php if (! empty($can['create']) || ! empty($can['update'])): ?>
 <!-- Add / Edit store -->
@@ -461,6 +660,12 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
 
             <!-- 1. choose file -->
             <div data-imp-step="1" class="space-y-4 p-5">
+                <?php if ($importNeedsApproval): ?>
+                    <div class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900">
+                        <i class="fa-regular fa-clock mt-0.5"></i>
+                        <span><b>This import needs the administrator's approval.</b> The lines are checked now, but nothing is saved until it is approved.</span>
+                    </div>
+                <?php endif; ?>
                 <label id="imp-drop" for="imp-file" class="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-6 py-12 text-center transition-colors hover:border-emerald-500 hover:bg-emerald-50/40">
                     <span class="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-2xl text-emerald-600"><i class="fa-solid fa-file-csv"></i></span>
                     <span class="text-sm font-semibold text-slate-700">Drop your CSV here, or click to choose a file</span>
@@ -546,7 +751,7 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
             <div data-imp-step="3" class="hidden px-8 py-12">
                 <div class="mx-auto max-w-xl text-center">
                     <span class="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-2xl text-emerald-600"><i class="fa-solid fa-spinner fa-spin"></i></span>
-                    <h3 class="mt-3 text-base font-bold text-slate-800">Importing your stores…</h3>
+                    <h3 id="imp-s3-title" class="mt-3 text-base font-bold text-slate-800">Importing your stores…</h3>
                     <p class="text-xs text-slate-500">Please keep this window open until it finishes.</p>
 
                     <div class="mt-6 h-3 w-full overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-valuemin="0" aria-valuemax="100">
@@ -577,7 +782,7 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
                 </div>
                 <div class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                     <div class="rounded-xl border border-slate-200 p-3"><div id="rep-total" class="text-xl font-bold text-slate-800">0</div><div class="text-[11px] uppercase tracking-wide text-slate-500">Total lines</div></div>
-                    <div class="rounded-xl border border-emerald-200 bg-emerald-50 p-3"><div id="rep-ok" class="text-xl font-bold text-emerald-700">0</div><div class="text-[11px] uppercase tracking-wide text-emerald-700">Imported</div></div>
+                    <div class="rounded-xl border border-emerald-200 bg-emerald-50 p-3"><div id="rep-ok" class="text-xl font-bold text-emerald-700">0</div><div id="rep-ok-label" class="text-[11px] uppercase tracking-wide text-emerald-700">Imported</div></div>
                     <div class="rounded-xl border border-rose-200 bg-rose-50 p-3"><div id="rep-bad" class="text-xl font-bold text-rose-600">0</div><div class="text-[11px] uppercase tracking-wide text-rose-600">Failed</div></div>
                     <div class="rounded-xl border border-slate-200 p-3"><div id="rep-time" class="text-xl font-bold text-slate-800">0:00</div><div class="text-[11px] uppercase tracking-wide text-slate-500">Time taken</div></div>
                 </div>
@@ -604,7 +809,7 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
         </div>
         <div data-imp-step="2" class="hidden flex items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3 rounded-b-2xl">
             <button type="button" id="imp-back" class="<?= $btnGhost ?>"><i class="fa-solid fa-arrow-left"></i> Choose another file</button>
-            <button type="button" id="imp-go" class="<?= $impBtn ?> disabled:cursor-not-allowed disabled:opacity-50" disabled><i class="fa-solid fa-play"></i> Import <span id="imp-go-n">0</span> valid lines</button>
+            <button type="button" id="imp-go" class="<?= $impBtn ?> disabled:cursor-not-allowed disabled:opacity-50" disabled><i class="fa-solid fa-play"></i> <span id="imp-go-verb">Import</span> <span id="imp-go-n">0</span> <span id="imp-go-tail">valid lines</span></button>
         </div>
         <div data-imp-step="3" class="hidden flex justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3 rounded-b-2xl">
             <button type="button" id="imp-cancel" class="<?= $btnGhost ?>">Stop</button>
@@ -628,6 +833,8 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
 window.SD_IMPORT = <?= json_encode([
     'checkUrl'   => base_url('store-details/import/check'),
     'commitUrl'  => base_url('store-details/import/commit'),
+    'submitUrl'  => base_url('store-details/import/submit'),
+    'needsApproval' => (bool) $importNeedsApproval,
     'csrfHeader' => csrf_header(),
     'token'      => csrf_hash(),
     'maxRows'    => (int) $importMax,
@@ -882,7 +1089,8 @@ window.SD_IMPORT = <?= json_encode([
             ready: ['Ready', 'bg-sky-50 text-sky-700 border border-sky-200', 'fa-circle-check'],
             failed: ['Failed', 'bg-rose-50 text-rose-700 border border-rose-200', 'fa-circle-xmark'],
             checking: ['Checking…', 'bg-slate-100 text-slate-500 border border-slate-200', 'fa-spinner fa-spin'],
-            imported: ['Imported', 'bg-emerald-50 text-emerald-700 border border-emerald-200', 'fa-circle-check']
+            imported: ['Imported', 'bg-emerald-50 text-emerald-700 border border-emerald-200', 'fa-circle-check'],
+            queued: ['Waiting for approval', 'bg-amber-50 text-amber-700 border border-amber-200', 'fa-clock']
         }[s];
         return '<span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ' + m[1] + '"><i class="fa-solid ' + m[2] + '"></i> ' + m[0] + '</span>';
     }
@@ -972,9 +1180,50 @@ window.SD_IMPORT = <?= json_encode([
         s = s % 60;
         return m + ':' + (s < 10 ? '0' : '') + s;
     }
+    // "Requires approval" is ON for Import: send ONE request with all the valid lines; nothing is saved yet
+    function submitForApproval(todo) {
+        setStep(3);
+        $('imp-s3-title').textContent = 'Sending your import for approval…';
+        $('imp-cancel').disabled = true;
+        state.started = Date.now();
+        $('imp-bar').style.width = '60%';
+        $('imp-pct').textContent = '…';
+        $('imp-done').textContent = '0';
+        $('imp-total').textContent = todo.length.toLocaleString();
+        $('imp-ok').textContent = '0';
+        $('imp-bad').textContent = '0';
+        $('imp-eta').textContent = '—';
+        $('imp-elapsed').textContent = '0:00';
+        state.timer = setInterval(function () { $('imp-elapsed').textContent = fmt(Date.now() - state.started); }, 500);
+
+        post(CFG.submitUrl, { file: state.file, rows: todo.map(payload) }).then(function (j) {
+            clearInterval(state.timer);
+            var by = {};
+            (j.results || []).forEach(function (x) { by[x.line] = x; });
+            todo.forEach(function (r) {
+                var x = by[r.id];
+                if (x && x.status === 'queued') { r.sv = 'queued'; r.reason = ''; }
+                else { r.sv = 'skipped'; r.reason = x ? (x.reason || 'Not sent.') : 'Not sent.'; }
+            });
+            state.queued = { ref: j.ref || '', approver: j.approver || '' };
+            state.took = Date.now() - state.started;
+            markDup();
+            setStep(4);
+            renderReport();
+        }).catch(function (e) {
+            clearInterval(state.timer);
+            $('imp-s3-title').textContent = 'Importing your stores…';
+            $('imp-cancel').disabled = false;
+            setStep(2);
+            window.alert(e.message);
+        });
+    }
+
     function runImport() {
         var todo = state.rows.filter(function (r) { return st(r) === 'ready'; });
         if (!todo.length) { return; }
+        if (CFG.needsApproval) { submitForApproval(todo); return; }
+        $('imp-s3-title').textContent = 'Importing your stores…';
         setStep(3);
         state.cancel = false;
         state.started = Date.now();
@@ -1035,7 +1284,7 @@ window.SD_IMPORT = <?= json_encode([
     }
 
     // -------------------------------------------------------------------- report
-    function fin(r) { return r.sv === 'imported' ? 'imported' : 'failed'; }
+    function fin(r) { return (r.sv === 'imported' || r.sv === 'queued') ? 'imported' : 'failed'; }
     function renderReport() {
         var ok = 0, bad = 0;
         state.rows.forEach(function (r) { if (fin(r) === 'imported') { ok++; } else { bad++; } });
@@ -1043,11 +1292,22 @@ window.SD_IMPORT = <?= json_encode([
         $('rep-ok').textContent = ok.toLocaleString();
         $('rep-bad').textContent = bad.toLocaleString();
         $('rep-time').textContent = fmt(state.took);
-        $('rep-removed').textContent = state.removed ? state.removed.toLocaleString() + ' line(s) were removed by you before importing.' : '';
+        var queued = !!state.queued;
+        var removedTxt = state.removed ? state.removed.toLocaleString() + ' line(s) were removed by you before importing.' : '';
+        $('rep-ok-label').textContent = queued ? 'Sent for approval' : 'Imported';
+        $('rep-removed').textContent = queued
+            ? ('Reference ' + state.queued.ref + (state.queued.approver ? ' · waiting for ' + state.queued.approver : '') + '. Nothing is saved until it is approved. ' + removedTxt).trim()
+            : removedTxt;
         $('rep-dl-failed').disabled = bad === 0;
-        $('rep-title').textContent = bad === 0 ? 'All lines were imported' : (ok === 0 ? 'Nothing was imported' : 'Import finished with some failed lines');
-        $('rep-icon').className = 'flex h-11 w-11 items-center justify-center rounded-full text-lg ' + (bad === 0 ? 'bg-emerald-100 text-emerald-600' : (ok === 0 ? 'bg-rose-100 text-rose-600' : 'bg-amber-100 text-amber-600'));
-        $('rep-icon').innerHTML = '<i class="fa-solid ' + (bad === 0 ? 'fa-circle-check' : (ok === 0 ? 'fa-circle-xmark' : 'fa-triangle-exclamation')) + '"></i>';
+        if (queued) {
+            $('rep-title').textContent = ok === 0 ? 'Nothing was sent for approval' : (bad === 0 ? 'Import sent for approval' : 'Import sent for approval, with some lines left out');
+            $('rep-icon').className = 'flex h-11 w-11 items-center justify-center rounded-full text-lg ' + (ok === 0 ? 'bg-rose-100 text-rose-600' : 'bg-amber-100 text-amber-600');
+            $('rep-icon').innerHTML = '<i class="fa-solid ' + (ok === 0 ? 'fa-circle-xmark' : 'fa-clock') + '"></i>';
+        } else {
+            $('rep-title').textContent = bad === 0 ? 'All lines were imported' : (ok === 0 ? 'Nothing was imported' : 'Import finished with some failed lines');
+            $('rep-icon').className = 'flex h-11 w-11 items-center justify-center rounded-full text-lg ' + (bad === 0 ? 'bg-emerald-100 text-emerald-600' : (ok === 0 ? 'bg-rose-100 text-rose-600' : 'bg-amber-100 text-amber-600'));
+            $('rep-icon').innerHTML = '<i class="fa-solid ' + (bad === 0 ? 'fa-circle-check' : (ok === 0 ? 'fa-circle-xmark' : 'fa-triangle-exclamation')) + '"></i>';
+        }
         if (bad === 0 && state.rfilter === 'failed') { state.rfilter = 'all'; }
         renderReportTable();
     }
@@ -1058,7 +1318,7 @@ window.SD_IMPORT = <?= json_encode([
             var f = fin(r);
             return '<tr class="' + (f === 'failed' ? 'bg-rose-50/40' : '') + '">' +
                 '<td class="px-3 py-2 font-mono text-slate-500">' + r.line + '</td>' +
-                '<td class="px-3 py-2 whitespace-nowrap">' + badge(f) + '</td>' +
+                '<td class="px-3 py-2 whitespace-nowrap">' + badge(r.sv === 'queued' ? 'queued' : f) + '</td>' +
                 '<td class="px-3 py-2 text-slate-700">' + esc(r.data.company) + '</td>' +
                 '<td class="px-3 py-2 text-slate-700">' + esc(r.data.branch) + '</td>' +
                 '<td class="px-3 py-2 font-mono text-[11px] text-slate-600">' + esc(r.data.store_code) + '</td>' +
@@ -1092,7 +1352,7 @@ window.SD_IMPORT = <?= json_encode([
         var rows = [['line', 'result', 'reason'].concat(FIELDS)];
         state.rows.forEach(function (r) {
             var f = fin(r);
-            rows.push([r.line, f === 'imported' ? 'IMPORTED' : 'FAILED', f === 'failed' ? (why(r) || r.reason) : ''].concat(FIELDS.map(function (k) { return r.data[k]; })));
+            rows.push([r.line, r.sv === 'queued' ? 'SENT FOR APPROVAL' : (f === 'imported' ? 'IMPORTED' : 'FAILED'), f === 'failed' ? (why(r) || r.reason) : ''].concat(FIELDS.map(function (k) { return r.data[k]; })));
         });
         download('store_import_report_' + stamp() + '.csv', rows);
     }
@@ -1109,7 +1369,7 @@ window.SD_IMPORT = <?= json_encode([
     function resetAll() {
         clearInterval(state.timer);
         clearTimeout(state.checkTimer);
-        var imported = state.rows.some(function (r) { return r.sv === 'imported'; });
+        var imported = state.rows.some(function (r) { return r.sv === 'imported' || r.sv === 'queued'; });
         if (state.step === 4 && imported) { window.location.reload(); return; }
         state = fresh();
         showErr('');
@@ -1129,6 +1389,11 @@ window.SD_IMPORT = <?= json_encode([
     function init() {
         if (started || !$('imp-file')) { return; }
         started = true;
+
+        if (CFG.needsApproval) {
+            $('imp-go-verb').textContent = 'Send';
+            $('imp-go-tail').textContent = 'valid lines for approval';
+        }
 
         var drop = $('imp-drop');
         $('imp-file').addEventListener('change', function (e) { readFile(e.target.files[0]); });
@@ -1260,7 +1525,7 @@ window.SD_IMPORT = <?= json_encode([
 /* "Sent for approval" popup: shown once after an action that needs the administrator's approval */
 $approvalSent = session()->getFlashdata('approval_sent');
 if (is_array($approvalSent)):
-    $apVerb = ['create' => 'add', 'update' => 'update', 'delete' => 'delete'][$approvalSent['action'] ?? ''] ?? 'change';
+    $apVerb = ['create' => 'add', 'update' => 'update', 'delete' => 'delete', 'export' => 'export', 'import' => 'import'][$approvalSent['action'] ?? ''] ?? 'change';
     ?>
 <dialog id="modal-approval-sent" class="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border-0 p-0 shadow-2xl backdrop:bg-slate-900/50" aria-labelledby="approval-sent-title">
     <div class="p-6 text-center">

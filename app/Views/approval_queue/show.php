@@ -24,6 +24,7 @@ $req = $req ?? [];
             'canAct' => $canAct ?? false,
             'can'    => $can ?? [],
             'logs'   => $logs ?? [],
+            'list'   => $list ?? null,
             'mode'   => 'page',
         ], ['saveData' => false]) ?>
     </div>

@@ -217,7 +217,15 @@ if ($notifFromDb) {
                             <span class="text-[13px] font-semibold">Notifications</span>
                             <button type="button" id="notif-readall" class="text-[11px] font-medium text-emerald-700 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 rounded <?= $notifCount ? '' : 'hidden' ?>">Mark all as read</button>
                         </div>
-                        <ul id="notif-list" class="max-h-[26rem] overflow-y-auto divide-y divide-slate-100">
+                        <div class="flex border-b border-slate-200 bg-white px-2" role="tablist" aria-label="Notifications">
+                            <button type="button" role="tab" id="notif-tab-unread" data-notif-tab="unread" aria-selected="true" class="flex items-center gap-1.5 border-b-2 border-emerald-600 px-3 py-2 text-xs font-semibold text-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600">
+                                Unread <span id="notif-tab-count" class="rounded-full bg-emerald-100 px-1.5 text-[10px] font-bold text-emerald-700 <?= $notifCount ? '' : 'hidden' ?>"><?= (int) $notifCount ?></span>
+                            </button>
+                            <button type="button" role="tab" id="notif-tab-read" data-notif-tab="read" aria-selected="false" class="border-b-2 border-transparent px-3 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600">
+                                Read
+                            </button>
+                        </div>
+                        <ul id="notif-list" class="max-h-[24rem] overflow-y-auto divide-y divide-slate-100">
                             <?php
                             $bellStyle = static fn (string $e): array => match ($e) {
                                 'approval_request'  => ['fa-clock', 'bg-amber-100 text-amber-600'],
@@ -243,7 +251,7 @@ if ($notifFromDb) {
                         </ul>
                         <div id="notif-empty" class="px-4 py-6 text-center text-slate-500 <?= $notifications ? 'hidden' : '' ?>">
                             <i class="fa-regular fa-bell-slash text-lg mb-1"></i>
-                            <p class="text-xs">No new notifications</p>
+                            <p id="notif-empty-text" class="text-xs">No unread notifications</p>
                         </div>
                     </div>
                 </div>
@@ -424,17 +432,36 @@ if ($notifFromDb) {
     var csrfName = <?= json_encode(csrf_header(), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     var csrfToken = <?= json_encode(csrf_hash(), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
 
-    var known = <?= (int) $notifCount ?>;   /* unread count the bell is showing now */
+    var known = <?= (int) $notifCount ?>;   /* unread count the bell is showing now (the badge counts ONLY unread) */
+    var tab = 'unread';                      /* 'unread' | 'read' */
+    var tabCount = document.getElementById('notif-tab-count');
+    var emptyText = document.getElementById('notif-empty-text');
 
     function setCount(n) {
         known = n;
         badge.textContent = n > 9 ? '9+' : String(n);
         badge.classList.toggle('hidden', n < 1);
-        if (readAll) { readAll.classList.toggle('hidden', n < 1); }
+        if (tabCount) { tabCount.textContent = n; tabCount.classList.toggle('hidden', n < 1); }
+        if (readAll) { readAll.classList.toggle('hidden', n < 1 || tab !== 'unread'); }
     }
-    /* called by the heartbeat: when the count changed, fetch the list FIRST, then badge and list appear together */
+    /* called by the heartbeat: when the unread count changed, fetch the list FIRST (unread tab), then badge and list appear together */
     function sync(n) {
-        if (n !== known) { refresh(); }
+        if (n === known) { return; }
+        if (tab === 'unread') { refresh(); } else { setCount(n); }
+    }
+
+    function setTab(t) {
+        tab = t;
+        document.querySelectorAll('[data-notif-tab]').forEach(function (b) {
+            var on = b.getAttribute('data-notif-tab') === t;
+            b.setAttribute('aria-selected', on ? 'true' : 'false');
+            b.className = on
+                ? 'flex items-center gap-1.5 border-b-2 border-emerald-600 px-3 py-2 text-xs font-semibold text-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600'
+                : 'flex items-center gap-1.5 border-b-2 border-transparent px-3 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600';
+        });
+        if (emptyText) { emptyText.textContent = t === 'read' ? 'No read notifications yet' : 'No unread notifications'; }
+        if (readAll) { readAll.classList.toggle('hidden', known < 1 || t !== 'unread'); }
+        refresh();
     }
     window.AppNotif = { setCount: setCount, refresh: refresh, sync: sync };
 
@@ -451,7 +478,7 @@ if ($notifFromDb) {
         list.textContent = '';
         items.forEach(function (n) {
             var st = STYLE[n.event] || ['fa-bell', 'bg-slate-100 text-slate-500'];
-            var li = el('li');
+            var li = el('li', tab === 'read' ? 'opacity-70' : '');
             var a = el('a', 'flex gap-3 px-4 py-3 hover:bg-slate-50 focus:bg-slate-50 focus:outline-none');
             a.href = n.url;
             var ic = el('span', 'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ' + st[1]);
@@ -466,13 +493,16 @@ if ($notifFromDb) {
     }
 
     function refresh() {
-        fetch(latestUrl, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        fetch(latestUrl + '?tab=' + tab, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
             .then(function (r) { return r.ok ? r.json() : null; })
-            .then(function (j) { if (j && j.ok) { render(j.items || []); setCount(j.unread || 0); } })
+            .then(function (j) { if (j && j.ok && j.tab === tab) { render(j.items || []); setCount(j.unread || 0); } })
             .catch(function () {});
     }
 
     btn.addEventListener('click', function () { if (!panel.classList.contains('hidden')) { refresh(); } });
+    document.querySelectorAll('[data-notif-tab]').forEach(function (b) {
+        b.addEventListener('click', function (e) { e.stopPropagation(); setTab(b.getAttribute('data-notif-tab')); });
+    });
 
     if (readAll) {
         readAll.addEventListener('click', function () {
@@ -480,7 +510,7 @@ if ($notifFromDb) {
             h[csrfName] = csrfToken;
             fetch(readAllUrl, { method: 'POST', headers: h, credentials: 'same-origin', loading: false })
                 .then(function (r) { return r.json(); })
-                .then(function (j) { if (j && j.csrf) { csrfToken = j.csrf; } render([]); setCount(0); })
+                .then(function (j) { if (j && j.csrf) { csrfToken = j.csrf; } setCount(0); refresh(); })
                 .catch(function () {});
         });
     }

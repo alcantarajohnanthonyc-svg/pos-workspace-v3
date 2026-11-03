@@ -287,6 +287,31 @@ class ApprovalRequests
             ];
         }
 
+        // bulk requests (many stores in ONE request, no single target_id): mark the stores that are inside them
+        $bulk = \Config\Database::connect()->table('approval_requests r')
+            ->select('r.action_key, r.reference_no, r.created_at, r.payload_after')
+            ->select("TRIM(CONCAT(COALESCE(ui.first_name, ''), ' ', COALESCE(ui.last_name, ''))) AS by_name", false)
+            ->join('usr_account_info ui', 'ui.account_id = r.requester_id', 'left')
+            ->where('r.module_slug', $slug)->where('r.target_table', $table)->where('r.status', 'pending')
+            ->where('r.target_id IS NULL', null, false)->whereIn('r.action_key', ['update', 'delete'])
+            ->orderBy('r.id', 'DESC')->limit(50)->get()->getResultArray();
+        foreach ($bulk as $b) {
+            $after = json_decode((string) $b['payload_after'], true);
+            if (! is_array($after) || ($after['mode'] ?? '') !== 'bulk') {
+                continue;
+            }
+            foreach ((array) ($after['items'] ?? []) as $it) {
+                $tid = (int) ($it['id'] ?? 0);
+                if ($tid > 0 && in_array($tid, $ids, true) && ! isset($map[$tid][(string) $b['action_key']])) {
+                    $map[$tid][(string) $b['action_key']] = [
+                        'ref'  => (string) $b['reference_no'],
+                        'by'   => trim((string) $b['by_name']) !== '' ? trim((string) $b['by_name']) : 'Someone',
+                        'when' => Notifier::ago((string) $b['created_at']),
+                    ];
+                }
+            }
+        }
+
         return $map;
     }
 
@@ -300,7 +325,7 @@ class ApprovalRequests
     {
         $db = \Config\Database::connect();
         $q  = static function () use ($db, $slug, $requesterId) {
-            $b = $db->table('approval_requests r')->where('r.module_slug', $slug)->where('r.action_key', 'create')->where('r.status', 'pending');
+            $b = $db->table('approval_requests r')->where('r.module_slug', $slug)->whereIn('r.action_key', ['create', 'import'])->where('r.status', 'pending');
             if ($requesterId !== null) {
                 $b->where('r.requester_id', $requesterId);
             }

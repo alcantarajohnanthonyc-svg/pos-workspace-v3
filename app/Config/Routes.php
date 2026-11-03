@@ -112,6 +112,9 @@ $routes->group('store-details', static function ($routes) {
     $routes->post('create', 'StoreDetails::create');                   // Add Store
     $routes->post('import/check', 'StoreDetails::importCheck');        // Import step 1: check the lines (the import dialog calls this URL)
     $routes->post('import/commit', 'StoreDetails::importCommit');      // Import step 2: save the valid lines
+    $routes->post('import/submit', 'StoreDetails::importSubmit');      // Import when "Requires approval" is ON: send ONE request
+    $routes->post('bulk/update', 'StoreDetails::bulkUpdate');          // checkboxes: change status / ownership of many stores
+    $routes->post('bulk/delete', 'StoreDetails::bulkDelete');          // checkboxes: delete many stores
     $routes->post('(:num)/update', 'StoreDetails::update/$1');         // Edit Store
     $routes->post('(:num)/delete', 'StoreDetails::delete/$1');         // Delete Store
 });
@@ -132,5 +135,3 @@ $routes->group('notifications', static function ($routes) {
     $routes->get('open/(:num)', 'Notifications::open/$1');        // mark as read, then go to its page
     $routes->post('read-all', 'Notifications::readAll');          // Mark all as read
 });
-
-$routes->get('notifdebug', 'NotifDebug::index');

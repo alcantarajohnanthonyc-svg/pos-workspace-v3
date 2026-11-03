@@ -31,11 +31,8 @@ if (version_compare(PHP_VERSION, $minPhpVersion, '<')) {
  * On your PC (localhost) nothing is defined here, so your .env still decides (development).
  */
 if (! defined('CI_ENVIRONMENT')) {
-    $host  = $_SERVER['HTTP_HOST'] ?? '';
-    $local = $host === '' || str_starts_with($host, 'localhost') || str_starts_with($host, '127.0.0.1') || str_starts_with($host, '[::1]');
-    define('CI_ENVIRONMENT', $local ? 'development' : 'production');
+    define('CI_ENVIRONMENT', 'development');
 }
-
 /*
  *---------------------------------------------------------------
  * SET THE CURRENT DIRECTORY

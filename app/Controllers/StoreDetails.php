@@ -33,6 +33,8 @@ class StoreDetails extends BaseController
     private const PER_PAGE = 25;
     private const IMPORT_MAX = 5000;   // lines per file (the browser reads the file)
     private const CHUNK_MAX  = 500;    // lines per check / commit request
+    private const SUBMIT_MAX = 5000;   // lines of one import sent for approval
+    private const BULK_MAX   = 200;    // stores of one bulk update / delete
     private const ACTIONS  = ['read', 'create', 'update', 'delete', 'import', 'export'];
 
     /** @var array<string,mixed>|null */
@@ -51,13 +53,17 @@ class StoreDetails extends BaseController
         $f     = $this->filters();
         $page  = max(1, (int) $this->request->getGet('page'));
 
+        // rows per page (the selector under the table)
+        $perPage = (int) $this->request->getGet('per_page');
+        $perPage = in_array($perPage, [5, 10, 25, 50, 100], true) ? $perPage : self::PER_PAGE;
+
         $total = $this->query($db, $scope, $f)->countAllResults();
-        $pages = max(1, (int) ceil($total / self::PER_PAGE));
+        $pages = max(1, (int) ceil($total / $perPage));
         $page  = min($page, $pages);
 
         $rows = $this->query($db, $scope, $f)
             ->orderBy('s.id', 'DESC')
-            ->limit(self::PER_PAGE, ($page - 1) * self::PER_PAGE)
+            ->limit($perPage, ($page - 1) * $perPage)
             ->get()->getResultArray();
 
         // which stores on this page are waiting for approval (update / delete), and the pending "new store" requests
@@ -102,7 +108,7 @@ class StoreDetails extends BaseController
             'total'      => $total,
             'page'       => $page,
             'pages'      => $pages,
-            'perPage'    => self::PER_PAGE,
+            'perPage'    => $perPage,
             'filters'    => $f,
             'stats'      => $stats,
             'scopeTotal' => (int) ($scopeTotal['n'] ?? 0),
@@ -117,6 +123,10 @@ class StoreDetails extends BaseController
             'pending'       => $pending,
             'pendingNew'    => $pendingNew,
             'pendingStores' => $pendingStores,
+            'importNeedsApproval' => $this->allowed('import') && $this->needsApproval('import'),
+            'exportNeedsApproval' => $this->allowed('export') && $this->needsApproval('export'),
+            'bulkUpdateNeedsApproval' => $this->allowed('update') && $this->needsApproval('update'),
+            'bulkDeleteNeedsApproval' => $this->allowed('delete') && $this->needsApproval('delete'),
         ]);
     }
 
@@ -252,6 +262,265 @@ class StoreDetails extends BaseController
         return $this->jsonOut(['ok' => true, 'results' => $results]);
     }
 
+    /**
+     * POST import/submit: "Requires approval" is ON for Import, so the lines are NOT saved. They are checked and sent
+     * as ONE request (all valid lines) to the Approval Queue; they are inserted when an administrator approves it.
+     */
+    public function importSubmit()
+    {
+        if ($deny = $this->ajaxDeny('import')) {
+            return $deny;
+        }
+        if (! $this->needsApproval('import')) {
+            return $this->jsonOut(['ok' => false, 'error' => 'This import does not need approval. Import the lines normally.'], 409);
+        }
+        $rows = $this->jsonRows(self::SUBMIT_MAX);
+        if ($rows === null) {
+            return $this->jsonOut(['ok' => false, 'error' => 'Invalid data was sent.'], 400);
+        }
+        $body = json_decode((string) $this->request->getBody(), true);
+        $file = is_array($body) ? mb_substr(trim((string) ($body['file'] ?? '')), 0, 150) : '';
+        $file = $file !== '' ? $file : 'stores.csv';
+
+        $db    = \Config\Database::connect();
+        $scope = $this->scope($db);
+        [$results, $insert] = $this->validateImportRows($db, $scope, $rows);
+        if (! $insert) {
+            return $this->jsonOut(['ok' => false, 'error' => 'None of the lines is valid, so nothing was sent for approval.'], 422);
+        }
+
+        $options = [];
+        foreach ($this->branchOptions($db, $scope) as $o) {
+            $options[(int) $o['id']] = $o;
+        }
+        $branchNames = [];
+        $sample      = [];
+        foreach ($insert as $d) {
+            $o = $options[(int) ($d['branch_id'] ?? 0)] ?? null;
+            if ($o) {
+                $branchNames[$o['name']] = true;
+            }
+            if (count($sample) < 5) {
+                $sample[] = (string) ($d['outlet_description'] ?? '');
+            }
+        }
+        $rowsOut = [];
+        foreach ($insert as $d) {
+            $o           = $options[(int) ($d['branch_id'] ?? 0)] ?? null;
+            $d['branch'] = $o ? $o['name'] . (($o['company'] ?? '') !== '' ? ' (' . $o['company'] . ')' : '') : '';
+            $rowsOut[]   = $d;
+        }
+        $branchList = array_keys($branchNames);
+        $shown      = implode(', ', array_slice($branchList, 0, 4)) . (count($branchList) > 4 ? ' +' . (count($branchList) - 4) . ' more' : '');
+
+        $uid = (int) (session()->get('account_id') ?? session()->get('id') ?? session()->get('user_id'));
+        $id  = ApprovalRequests::submit([
+            'module_slug'  => self::SLUG,
+            'action_key'   => 'import',
+            'action_label' => 'Import Stores',
+            'requester_id' => $uid,
+            'target_table' => 'store_details',
+            'target_label' => $file,
+            'summary'      => 'Import ' . count($insert) . ' store(s) from "' . $file . '".',
+            'scope_text'   => $shown !== '' ? $shown : null,
+            'priority'     => 'medium',
+            'before'       => null,
+            'after'        => [
+                'file'     => $file,
+                'lines'    => count($insert),
+                'skipped'  => count($rows) - count($insert),
+                'branches' => $shown,
+                'sample'   => implode('; ', $sample) . (count($insert) > 5 ? ' …' : ''),
+                'rows'     => $rowsOut,
+            ],
+            'field_labels' => ['file' => 'File', 'lines' => 'Lines to import', 'skipped' => 'Lines with errors (not sent)', 'branches' => 'Branches', 'sample' => 'First lines', 'rows' => false],
+        ]);
+        if (! $id) {
+            return $this->jsonOut(['ok' => false, 'error' => 'The request could not be sent for approval. Please try again.'], 500);
+        }
+
+        foreach ($results as &$res) {
+            if ($res['status'] === 'ready') {
+                $res['status'] = 'queued';
+            }
+        }
+        unset($res);
+
+        return $this->jsonOut([
+            'ok'       => true,
+            'ref'      => ApprovalRequests::reference($id),
+            'approver' => ApprovalRequests::currentApproverName($id),
+            'results'  => $results,
+        ]);
+    }
+
+    // ---------------------------------------------------------------- bulk (checkboxes in the list)
+
+    /** POST store-details/bulk/update  {ids:[...], changes:{store_status, ownership_type}} */
+    public function bulkUpdate()
+    {
+        return $this->bulk('update');
+    }
+
+    /** POST store-details/bulk/delete  {ids:[...]} */
+    public function bulkDelete()
+    {
+        return $this->bulk('delete');
+    }
+
+    /**
+     * Change or delete many selected stores at once.
+     * "Requires approval" ON for this action -> ONE request with every store (the approver sees all of them);
+     * Super Admin / module administrators, or approval OFF -> applied now.
+     */
+    private function bulk(string $action)
+    {
+        if ($deny = $this->ajaxDeny($action)) {
+            return $deny;
+        }
+        $body = json_decode((string) $this->request->getBody(), true);
+        $body = is_array($body) ? $body : [];
+        $ids  = array_values(array_unique(array_filter(array_map('intval', (array) ($body['ids'] ?? [])))));
+        if (! $ids) {
+            return $this->jsonOut(['ok' => false, 'error' => 'Select at least one store.'], 422);
+        }
+        if (count($ids) > self::BULK_MAX) {
+            return $this->jsonOut(['ok' => false, 'error' => 'You can change up to ' . self::BULK_MAX . ' stores at a time.'], 422);
+        }
+
+        $changes = [];
+        if ($action === 'update') {
+            foreach (['store_status' => 50, 'ownership_type' => 100] as $k => $len) {
+                $v = trim(mb_substr((string) (($body['changes'] ?? [])[$k] ?? ''), 0, $len));
+                if ($v !== '') {
+                    $changes[$k] = $v;
+                }
+            }
+            if (! $changes) {
+                return $this->jsonOut(['ok' => false, 'error' => 'Choose what to change: the status or the ownership.'], 422);
+            }
+        }
+
+        $db     = \Config\Database::connect();
+        $scope  = $this->scope($db);
+        $stores = $this->query($db, $scope, [])->whereIn('s.id', $ids)->get()->getResultArray();   // only stores inside the user's access
+        if (! $stores) {
+            return $this->jsonOut(['ok' => false, 'error' => 'The selected stores were not found.'], 404);
+        }
+
+        $pend    = ApprovalRequests::pendingMap(self::SLUG, 'store_details', array_column($stores, 'id'));
+        $options = [];
+        foreach ($this->branchOptions($db, $scope) as $o) {
+            $options[(int) $o['id']] = $o;
+        }
+
+        $items       = [];
+        $skipPending = 0;
+        $skipSame    = 0;
+        foreach ($stores as $s) {
+            $sid = (int) $s['id'];
+            if (! empty($pend[$sid]['delete']) || ! empty($pend[$sid][$action])) {
+                $skipPending++;
+
+                continue;
+            }
+            $o    = $options[(int) $s['branch_id']] ?? null;
+            $item = [
+                'id'         => $sid,
+                'store_code' => (string) ($s['store_code'] ?? ''),
+                'outlet'     => (string) $s['outlet_description'],
+                'branch'     => $o ? $o['name'] . (($o['company'] ?? '') !== '' ? ' (' . $o['company'] . ')' : '') : '',
+                'status'     => (string) ($s['store_status'] ?? ''),
+            ];
+            if ($action === 'update') {
+                $before = [];
+                $after  = [];
+                foreach ($changes as $k => $v) {
+                    if ((string) ($s[$k] ?? '') !== $v) {
+                        $before[$k] = (string) ($s[$k] ?? '');
+                        $after[$k]  = $v;
+                    }
+                }
+                if (! $after) {
+                    $skipSame++;
+
+                    continue;
+                }
+                $item['before'] = $before;
+                $item['after']  = $after;
+            }
+            $items[] = $item;
+        }
+
+        if (! $items) {
+            $why = $skipPending > 0 ? 'The selected stores already have a request waiting for approval.' : 'The selected stores already have these values.';
+
+            return $this->jsonOut(['ok' => false, 'error' => $why], 422);
+        }
+        $n       = count($items);
+        $skipped = $skipPending + $skipSame;
+
+        $label = ['store_status' => 'Status', 'ownership_type' => 'Ownership'];
+        $text  = [];
+        foreach ($changes as $k => $v) {
+            $text[] = $label[$k] . ' → ' . $v;
+        }
+        $changeText = $action === 'update' ? implode('; ', $text) : 'Delete the selected stores';
+
+        if ($this->needsApproval($action)) {
+            $uid      = (int) (session()->get('account_id') ?? session()->get('id') ?? session()->get('user_id'));
+            $branches = array_values(array_unique(array_column($items, 'branch')));
+            $shown    = implode(', ', array_slice($branches, 0, 3)) . (count($branches) > 3 ? ' +' . (count($branches) - 3) . ' more' : '');
+            $word     = $n . ' store' . ($n === 1 ? '' : 's');
+
+            $id = ApprovalRequests::submit([
+                'module_slug'  => self::SLUG,
+                'action_key'   => $action,
+                'action_label' => ($action === 'update' ? 'Update ' : 'Delete ') . $word,
+                'requester_id' => $uid,
+                'target_table' => 'store_details',
+                'target_id'    => null,
+                'target_label' => $word,
+                'summary'      => ($action === 'update' ? 'Change ' . implode(', ', $text) . ' for ' : 'Delete ') . $word . '.',
+                'scope_text'   => $shown !== '' ? $shown : null,
+                'priority'     => $action === 'delete' ? 'high' : 'medium',
+                'before'       => null,
+                'after'        => ['mode' => 'bulk', 'count' => $n, 'change_text' => $changeText, 'changes' => $changes, 'items' => $items],
+                'field_labels' => ['mode' => false, 'items' => false, 'changes' => false, 'count' => 'Stores', 'change_text' => 'Change'],
+            ]);
+            if (! $id) {
+                return $this->jsonOut(['ok' => false, 'error' => 'The request could not be sent for approval. Please try again.'], 500);
+            }
+
+            return $this->jsonOut([
+                'ok'       => true,
+                'queued'   => true,
+                'count'    => $n,
+                'skipped'  => $skipped,
+                'ref'      => ApprovalRequests::reference($id),
+                'approver' => ApprovalRequests::currentApproverName($id),
+                'name'     => $word,
+                'action'   => $action,
+            ]);
+        }
+
+        // applied now
+        $applyIds = array_column($items, 'id');
+        $db->transStart();
+        if ($action === 'update') {
+            $db->table('store_details')->whereIn('id', $applyIds)->update($changes);
+        } else {
+            $db->table('store_details')->whereIn('id', $applyIds)->delete();
+        }
+        $db->transComplete();
+        if ($db->transStatus() === false) {
+            return $this->jsonOut(['ok' => false, 'error' => 'The change could not be saved. Please try again.'], 500);
+        }
+        $this->notifyChange($action, $n . ' store' . ($n === 1 ? '' : 's'));
+
+        return $this->jsonOut(['ok' => true, 'queued' => false, 'count' => $n, 'skipped' => $skipped]);
+    }
+
     /** JSON guard for the import requests. */
     private function ajaxDeny(string $action)
     {
@@ -277,14 +546,14 @@ class StoreDetails extends BaseController
      *
      * @return list<array{line:int,raw:array<string,string>}>|null
      */
-    private function jsonRows(): ?array
+    private function jsonRows(?int $max = null): ?array
     {
         $body = json_decode((string) $this->request->getBody(), true);
         if (! is_array($body) || ! isset($body['rows']) || ! is_array($body['rows'])) {
             return null;
         }
         $n = count($body['rows']);
-        if ($n < 1 || $n > self::CHUNK_MAX) {
+        if ($n < 1 || $n > ($max ?? self::CHUNK_MAX)) {
             return null;
         }
 
@@ -488,6 +757,23 @@ class StoreDetails extends BaseController
             return $deny;
         }
 
+        // "Requires approval" for Export: no direct download. The request goes to the Approval Queue; once approved, the
+        // requester gets a notification with a one-time link (?request=ID, valid 24 hours) that downloads the same filter.
+        $filters   = $this->filters();
+        $requestId = (int) $this->request->getGet('request');
+        if (! $template) {
+            $dbx = \Config\Database::connect();
+            if ($requestId > 0) {
+                [$approved, $why] = $this->approvedExportFilters($dbx, $requestId);
+                if ($approved === null) {
+                    return redirect()->to(base_url('store-details'))->with('error', $why);
+                }
+                $filters = $approved;
+            } elseif ($this->needsApproval('export')) {
+                return $this->sendExportForApproval($dbx, $this->scope($dbx), $filters);
+            }
+        }
+
         $head = ['company', 'branch', 'store_code', 'erp_code', 'outlet_description', 'address', 'ownership_type', 'store_status', 'date_opened', 'last_pos_selling_date'];
         $out  = fopen('php://temp', 'r+');
         fwrite($out, "\xEF\xBB\xBF");
@@ -496,7 +782,7 @@ class StoreDetails extends BaseController
         if (! $template) {
             $db    = \Config\Database::connect();
             $scope = $this->scope($db);
-            $rows  = $this->query($db, $scope, $this->filters())->orderBy('s.id', 'ASC')->get()->getResultArray();
+            $rows  = $this->query($db, $scope, $filters)->orderBy('s.id', 'ASC')->get()->getResultArray();
             foreach ($rows as $r) {
                 fputcsv($out, array_map([$this, 'csvSafe'], [
                     $r['company_name'] ?? '', $r['branch_name'] ?? '', $r['store_code'], $r['erp_code'], $r['outlet_description'],
@@ -513,6 +799,125 @@ class StoreDetails extends BaseController
             ->setHeader('Content-Type', 'text/csv; charset=UTF-8')
             ->setHeader('Content-Disposition', 'attachment; filename="' . ($template ? 'store_details_template' : 'store_details_' . date('Ymd_His')) . '.csv"')
             ->setBody($csv);
+    }
+
+    // ---------------------------------------------------------------- export approval
+
+    /**
+     * An approved export request -> the filters to export with. One download, within 24 hours, by the requester.
+     *
+     * @return array{0:?array<string,mixed>, 1:string}  [filters|null, message]
+     */
+    private function approvedExportFilters($db, int $requestId): array
+    {
+        $uid = (int) (session()->get('account_id') ?? session()->get('id') ?? session()->get('user_id'));
+        $r   = $db->table('approval_requests')->where('id', $requestId)->where('module_slug', self::SLUG)->where('action_key', 'export')->get()->getRowArray();
+        if (! $r || ((int) $r['requester_id'] !== $uid && ! $this->isSuper())) {
+            return [null, 'That export request was not found.'];
+        }
+        if ($r['status'] === 'pending') {
+            return [null, 'This export is still waiting for approval (' . $r['reference_no'] . ').'];
+        }
+        if ($r['status'] !== 'approved') {
+            return [null, 'This export request was ' . $r['status'] . ' (' . $r['reference_no'] . ').'];
+        }
+        $when = strtotime((string) $r['decided_at']);
+        if (! $when || time() - $when > 86400) {
+            return [null, 'The approval of this export expired (24 hours). Please send a new export request.'];
+        }
+        if ($db->table('approval_request_logs')->where('request_id', $requestId)->where('event', 'downloaded')->countAllResults() > 0) {
+            return [null, 'This export was already downloaded. Send a new export request if you need it again.'];
+        }
+
+        $after = json_decode((string) $r['payload_after'], true);
+        $f     = is_array($after) && is_array($after['filters'] ?? null) ? $after['filters'] : [];
+
+        $db->table('approval_request_logs')->insert([
+            'request_id' => $requestId,
+            'actor_id'   => $uid,
+            'event'      => 'downloaded',
+            'note'       => null,
+            'created_at' => date('Y-m-d H:i:s'),
+        ]);
+
+        return [[
+            'q'       => mb_substr((string) ($f['q'] ?? ''), 0, 100),
+            'company' => (int) ($f['company'] ?? 0),
+            'branch'  => (int) ($f['branch'] ?? 0),
+            'status'  => mb_substr((string) ($f['status'] ?? ''), 0, 50),
+            'pending' => (int) ($f['pending'] ?? 0),
+        ], ''];
+    }
+
+    /** Export needs approval: send the request (with the filters and how many stores) instead of downloading. */
+    private function sendExportForApproval($db, array $scope, array $filters)
+    {
+        $uid = (int) (session()->get('account_id') ?? session()->get('id') ?? session()->get('user_id'));
+        $dup = $db->table('approval_requests')->select('reference_no')
+            ->where('module_slug', self::SLUG)->where('action_key', 'export')->where('requester_id', $uid)->where('status', 'pending')
+            ->get()->getRowArray();
+        if ($dup) {
+            return redirect()->back()->with('error', 'You already have an export waiting for approval (' . $dup['reference_no'] . ').');
+        }
+
+        $count = (int) $this->query($db, $scope, $filters)->countAllResults();
+        if ($count < 1) {
+            return redirect()->back()->with('error', 'There are no stores to export with these filters.');
+        }
+
+        $options = $this->branchOptions($db, $scope);
+        $parts   = [];
+        if ($filters['q'] !== '') {
+            $parts[] = 'Search: "' . $filters['q'] . '"';
+        }
+        if ($filters['company'] > 0) {
+            foreach ($options as $o) {
+                if ((int) $o['company_id'] === (int) $filters['company']) {
+                    $parts[] = 'Company: ' . $o['company'];
+                    break;
+                }
+            }
+        }
+        if ($filters['branch'] > 0) {
+            foreach ($options as $o) {
+                if ((int) $o['id'] === (int) $filters['branch']) {
+                    $parts[] = 'Branch: ' . $o['name'];
+                    break;
+                }
+            }
+        }
+        if ($filters['status'] !== '') {
+            $parts[] = 'Status: ' . $filters['status'];
+        }
+        if (! empty($filters['pending'])) {
+            $parts[] = 'Only stores pending approval';
+        }
+        $text  = $parts ? implode(' · ', $parts) : 'No filter (all the stores this user can see)';
+        $label = 'Store export (' . $count . ' store' . ($count === 1 ? '' : 's') . ')';
+
+        $id = ApprovalRequests::submit([
+            'module_slug'  => self::SLUG,
+            'action_key'   => 'export',
+            'action_label' => 'Export Stores',
+            'requester_id' => $uid,
+            'target_table' => 'store_details',
+            'target_label' => $label,
+            'summary'      => 'Export ' . $count . ' store(s) to CSV. ' . $text . '.',
+            'priority'     => 'low',
+            'before'       => null,
+            'after'        => ['stores' => $count, 'filter_text' => $text, 'filters' => $filters],
+            'field_labels' => ['stores' => 'Stores to export', 'filter_text' => 'Filters', 'filters' => false],
+        ]);
+        if (! $id) {
+            return redirect()->back()->with('error', 'The export request could not be sent for approval. Please try again.');
+        }
+
+        return redirect()->back()->with('approval_sent', [
+            'ref'      => ApprovalRequests::reference($id),
+            'name'     => $label,
+            'action'   => 'export',
+            'approver' => ApprovalRequests::currentApproverName($id),
+        ]);
     }
 
     // ---------------------------------------------------------------- notifications
