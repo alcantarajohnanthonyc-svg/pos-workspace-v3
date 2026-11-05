@@ -30,8 +30,8 @@ body {
     overflow-y: auto;
     font-family: Inter, "Segoe UI", Arial, sans-serif;
     color: var(--navy);
-    background: var(--pw-canvas-blue) url('/assets/images/pos-workspace-login-bgv1.png') no-repeat;
-    background-size: 100% 100%;
+    background: var(--pw-canvas-blue) url('<?= base_url("assets/images/pos-workspace-login-bgv1.png") ?>') no-repeat;
+    background-size: cover;
     background-position: center;
     position: relative;
 }
@@ -296,7 +296,7 @@ body {
 <main class="login-wrapper">
     <div class="login-card">
         <div class="brand-mark">
-            <img src="/assets/images/P-logo.png" alt="POS Workspace Logo">
+            <img src="<?= esc(base_url('assets/images/P-logo.png'), 'attr') ?>" alt="POS Workspace Logo">
         </div>
         <h1 class="brand-title">POS Workspace <span>V3</span></h1>
         <p class="subtitle">Sign in to your account</p>

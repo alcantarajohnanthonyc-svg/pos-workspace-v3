@@ -27,7 +27,7 @@ $locked     = ($m['slug'] ?? '') === 'module_setting';   // can never be switche
 $flashSuccess = session()->getFlashdata('success');
 $flashError   = session()->getFlashdata('error');
 $startTab     = session()->getFlashdata('tab');
-if (! in_array($startTab, ['details', 'access', 'admins', 'scope', 'notifications'], true)) { $startTab = 'details'; }
+if (! in_array($startTab, ['details', 'access', 'admins', 'scope', 'notifications', 'statuses'], true)) { $startTab = 'details'; }
 
 $btnPrim  = 'inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2';
 $btnGhost = 'inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 text-xs font-semibold rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600';
@@ -141,7 +141,7 @@ foreach ($accounts as $acc) {
     <section class="rounded-xl border border-slate-200 bg-white shadow-sm">
         <div class="overflow-x-auto border-b border-slate-200 px-4 sm:px-5">
             <nav class="flex min-w-max gap-5" role="tablist" aria-label="Module sections">
-                <?php foreach ([['details', 'Module Details', 1], ['access', 'Module Access', 2], ['admins', 'Module Administrators', 3], ['scope', 'Company / Branch Scope', 4], ['notifications', 'Notifications', 5]] as [$key, $text, $num]): ?>
+                <?php foreach ([['details', 'Module Details', 1], ['access', 'Module Access', 2], ['admins', 'Module Administrators', 3], ['scope', 'Company / Branch Scope', 4], ['notifications', 'Notifications', 5], ['statuses', 'Statuses', 6]] as [$key, $text, $num]): ?>
                     <button type="button" role="tab" data-tab="<?= $key ?>" id="btn-tab-<?= $key ?>" aria-controls="content-tab-<?= $key ?>"
                             class="tab-link flex items-center gap-2 whitespace-nowrap rounded-t border-b-2 border-transparent py-3 text-xs font-medium text-slate-500 transition-colors hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600">
                         <span class="tab-num flex h-5 w-5 items-center justify-center rounded-full bg-slate-100 text-[10px] font-semibold text-slate-600"><?= $num ?></span>
@@ -465,6 +465,11 @@ foreach ($accounts as $acc) {
             <!-- 5. NOTIFICATIONS TAB (In-App / Email per event) -->
             <div id="content-tab-notifications" class="tab-content hidden" role="tabpanel" aria-labelledby="btn-tab-notifications">
                 <?= view('module_settings/_tab_notifications', ['moduleId' => $mid, 'canEdit' => ($canEdit || $canApproval)], ['saveData' => false]) ?>
+            </div>
+
+            <!-- 6. STATUSES TAB (the statuses of this module, e.g. OPEN / TEMPORARY CLOSED / PERMANENT CLOSED) -->
+            <div id="content-tab-statuses" class="tab-content hidden" role="tabpanel" aria-labelledby="btn-tab-statuses">
+                <?= view('module_settings/_tab_statuses', ['moduleId' => $mid, 'canEdit' => ($canEdit || $canApproval)], ['saveData' => false]) ?>
             </div>
 
         </div>

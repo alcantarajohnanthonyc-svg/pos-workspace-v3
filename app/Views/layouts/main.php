@@ -80,6 +80,14 @@ if ($notifFromDb) {
         @media (prefers-reduced-motion: reduce) {
             #sidebar, #sidebar-backdrop, .sb-chevron { transition: none !important; }
         }
+
+        /* Force portrait/square orientation fix for avatar images */
+    .avatar-img {
+        width: 100% !important;
+        height: 100% !important;
+        object-fit: cover !important;
+        transform: rotate(0deg) !important; /* Inaalis ang anumang browser auto-rotation */
+    }
     </style>
 </head>
 <body class="bg-gray-100 font-sans antialiased text-slate-800 text-sm">
@@ -265,8 +273,7 @@ if ($notifFromDb) {
                             class="flex items-center gap-2 pl-1 pr-1 sm:pr-2 py-1 rounded-full hover:bg-slate-100 transition-colors text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">
                         <span class="w-8 h-8 rounded-full overflow-hidden bg-emerald-600 text-white flex items-center justify-center text-xs font-semibold flex-shrink-0">
                             <?php if ($avatar): ?>
-                                <img src="<?= esc($avatar, 'attr') ?>" alt="" class="w-full h-full object-cover">
-                            <?php else: ?>
+<img src="<?= esc($avatar, 'attr') ?>" alt="User Avatar" class="avatar-img">                            <?php else: ?>
                                 <?= esc($initials) ?>
                             <?php endif; ?>
                         </span>

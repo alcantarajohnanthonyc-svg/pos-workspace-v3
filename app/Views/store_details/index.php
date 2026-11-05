@@ -28,6 +28,11 @@ $pendingStores = (int) ($pendingStores ?? 0);                               // s
 $bulkUpdateNeedsApproval = ! empty($bulkUpdateNeedsApproval);
 $bulkDeleteNeedsApproval = ! empty($bulkDeleteNeedsApproval);
 $canBulk = ! empty($can['update']) || ! empty($can['delete']);                // checkbox column + bulk bar
+$modeAdd      = ! empty($can['create']);                            // import type "Add new stores" needs create
+$modeUpdate   = ! empty($can['update']);                            // "Update existing stores" needs update; "Add or update" needs both
+$defaultMode  = $modeAdd ? 'add' : ($modeUpdate ? 'update' : '');
+$statusDefs   = (array) ($statusDefs ?? []);      // active statuses from Module Settings > Statuses
+$statusColors = (array) ($statusColors ?? []);    // lowercase status => colour name
 $importNeedsApproval = ! empty($importNeedsApproval);                       // Import needs the administrator's approval
 $exportNeedsApproval = ! empty($exportNeedsApproval);                       // Export needs the administrator's approval
 
@@ -41,13 +46,31 @@ $closeBtn = 'flex h-8 w-8 items-center justify-center rounded-md text-slate-500 
 $fInput   = 'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-[13px] text-slate-800 focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/20';
 $fLabel   = 'mb-1 block text-xs font-medium text-slate-700';
 
-$badge = static function (?string $s): string {
-    $k = strtolower(trim((string) $s));
-    if ($k === '') { return 'bg-slate-100 text-slate-500'; }
-    // closed / inactive first: "IN-ACTIVE" also contains "active"
-    if (preg_match('/clos|in-?active|terminat|stop/', $k)) { return 'bg-rose-50 text-rose-700 border border-rose-200'; }
-    if (preg_match('/open|active|operat/', $k)) { return 'bg-emerald-50 text-emerald-700 border border-emerald-200'; }
-    return 'bg-amber-50 text-amber-700 border border-amber-200';
+// colour name -> [badge classes, card classes, icon tile classes]  (full class names so Tailwind finds them)
+$palette = [
+    'emerald' => ['bg-emerald-50 text-emerald-700 border border-emerald-200', 'border-emerald-200 bg-emerald-50/60', 'bg-emerald-100 text-emerald-600'],
+    'amber'   => ['bg-amber-50 text-amber-700 border border-amber-200',       'border-amber-200 bg-amber-50/60',     'bg-amber-100 text-amber-600'],
+    'rose'    => ['bg-rose-50 text-rose-700 border border-rose-200',          'border-rose-200 bg-rose-50/60',       'bg-rose-100 text-rose-600'],
+    'sky'     => ['bg-sky-50 text-sky-700 border border-sky-200',             'border-sky-200 bg-sky-50/60',         'bg-sky-100 text-sky-600'],
+    'violet'  => ['bg-violet-50 text-violet-700 border border-violet-200',   'border-violet-200 bg-violet-50/60',   'bg-violet-100 text-violet-600'],
+    'orange'  => ['bg-orange-50 text-orange-700 border border-orange-200',    'border-orange-200 bg-orange-50/60',   'bg-orange-100 text-orange-600'],
+    'teal'    => ['bg-teal-50 text-teal-700 border border-teal-200',          'border-teal-200 bg-teal-50/60',       'bg-teal-100 text-teal-600'],
+    'slate'   => ['bg-slate-100 text-slate-600 border border-slate-200',      'border-slate-200 bg-slate-50/70',     'bg-slate-200 text-slate-600'],
+];
+// the colour of a status: the one chosen in Module Settings > Statuses, else a guess from the words (old data)
+$statusColor = static function (?string $s) use ($statusColors): string {
+    $k = strtolower(trim((string) preg_replace('/\s+/', ' ', (string) $s)));
+    if ($k === '' || $k === 'no status') { return 'slate'; }
+    if (isset($statusColors[$k])) { return $statusColors[$k]; }
+    if (preg_match('/clos|in-?active|terminat|stop/', $k)) { return preg_match('/temp/', $k) ? 'amber' : 'rose'; }
+    if (preg_match('/open|active|operat/', $k)) { return 'emerald'; }
+
+    return 'violet';
+};
+$badge = static function (?string $s) use ($palette, $statusColor): string {
+    $k = trim((string) $s);
+
+    return $k === '' ? 'bg-slate-100 text-slate-500' : $palette[$statusColor($k)][0];
 };
 $branchLabel = static fn (array $b): string => ($b['company'] ?? '') !== '' && $b['company'] !== null ? $b['name'] . ' (' . $b['company'] . ')' : (string) $b['name'];
 // Companies for the filter modal come from the branches the user may see (already scoped by the controller)
@@ -128,13 +151,7 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
     $statAll    = array_sum(array_map('intval', (array) $stats['by']));   // stable total: search/company/branch applied, status ignored
     $statSelect = $filters['status'];
     $allLink    = $qs(['status' => '', 'page' => null]);
-    $tone = static function (string $s): array {   // [card, icon tile]
-        $k = strtolower(trim($s));
-        if ($k === '' || $k === 'no status') { return ['border-slate-200 bg-slate-50/70', 'bg-slate-200 text-slate-600']; }
-        if (preg_match('/clos|in-?active|terminat|stop/', $k)) { return ['border-rose-200 bg-rose-50/60', 'bg-rose-100 text-rose-600']; }
-        if (preg_match('/open|active|operat/', $k)) { return ['border-emerald-200 bg-emerald-50/60', 'bg-emerald-100 text-emerald-600']; }
-        return ['border-violet-200 bg-violet-50/60', 'bg-violet-100 text-violet-600'];
-    };
+    $tone = static fn (string $s): array => [$palette[$statusColor($s)][1], $palette[$statusColor($s)][2]];   // [card, icon tile]
     ?>
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
 
@@ -403,8 +420,10 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
             <p class="text-xs text-slate-500">Fill only what you want to change. Empty fields stay as they are.</p>
             <div>
                 <label for="bu-status" class="<?= $fLabel ?>">Status</label>
-                <input id="bu-status" list="dl-bu-status" maxlength="50" placeholder="e.g. OPEN" class="<?= $fInput ?>">
-                <datalist id="dl-bu-status"><?php foreach ($statuses as $s): ?><option value="<?= esc($s, 'attr') ?>"><?php endforeach; ?></datalist>
+                <select id="bu-status" class="<?= $fInput ?>">
+                    <option value="">Do not change</option>
+                    <?php foreach (($statusDefs ?: $statuses) as $s): ?><option value="<?= esc($s, 'attr') ?>"><?= esc($s) ?></option><?php endforeach; ?>
+                </select>
             </div>
             <div>
                 <label for="bu-own" class="<?= $fLabel ?>">Ownership type</label>
@@ -571,8 +590,10 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
                 </div>
                 <div>
                     <label for="f_status" class="<?= $fLabel ?>">Store Status</label>
-                    <input id="f_status" name="store_status" maxlength="50" list="dl-status" class="<?= $fInput ?>" placeholder="e.g. Open">
-                    <datalist id="dl-status"><?php foreach ($statuses as $s): ?><option value="<?= esc($s, 'attr') ?>"><?php endforeach; ?></datalist>
+                    <select id="f_status" name="store_status" class="<?= $fInput ?>">
+                        <option value="">No status</option>
+                        <?php foreach (($statusDefs ?: $statuses) as $s): ?><option value="<?= esc($s, 'attr') ?>"><?= esc($s) ?></option><?php endforeach; ?>
+                    </select>
                 </div>
                 <div>
                     <label for="f_code" class="<?= $fLabel ?>">Store Code</label>
@@ -666,11 +687,38 @@ $qs = static fn (array $extra) => http_build_query(array_filter(array_merge(['q'
                         <span><b>This import needs the administrator's approval.</b> The lines are checked now, but nothing is saved until it is approved.</span>
                     </div>
                 <?php endif; ?>
-                <label id="imp-drop" for="imp-file" class="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-6 py-12 text-center transition-colors hover:border-emerald-500 hover:bg-emerald-50/40">
+                <fieldset class="rounded-xl border border-slate-200 p-4">
+                    <legend class="px-1 text-xs font-semibold text-slate-700">What should this import do?</legend>
+                    <?php if ($defaultMode === ''): ?>
+                        <p class="mt-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">You can open the import, but you have no permission to add or to update stores, so nothing can be imported. Ask the administrator for the <b>create</b> or <b>update</b> action of this module.</p>
+                    <?php else: ?>
+                        <div class="mt-1 grid gap-2 sm:grid-cols-3">
+                            <?php if ($modeAdd): ?>
+                                <label class="flex cursor-pointer gap-2 rounded-lg border border-slate-200 p-3 text-xs has-[:checked]:border-emerald-500 has-[:checked]:bg-emerald-50">
+                                    <input type="radio" name="imp_mode" value="add" <?= $defaultMode === 'add' ? 'checked' : '' ?> class="mt-0.5 h-4 w-4 border-slate-300 text-emerald-600 focus:ring-emerald-600">
+                                    <span><b class="block text-slate-800">Add new stores</b><span class="text-slate-500">A store code that already exists is rejected.</span></span>
+                                </label>
+                            <?php endif; ?>
+                            <?php if ($modeUpdate): ?>
+                                <label class="flex cursor-pointer gap-2 rounded-lg border border-slate-200 p-3 text-xs has-[:checked]:border-emerald-500 has-[:checked]:bg-emerald-50">
+                                    <input type="radio" name="imp_mode" value="update" <?= $defaultMode === 'update' ? 'checked' : '' ?> class="mt-0.5 h-4 w-4 border-slate-300 text-emerald-600 focus:ring-emerald-600">
+                                    <span><b class="block text-slate-800">Update existing stores</b><span class="text-slate-500">Each store is found by its <b>store code</b>. A blank cell keeps the current value.</span></span>
+                                </label>
+                            <?php endif; ?>
+                            <?php if ($modeAdd && $modeUpdate): ?>
+                                <label class="flex cursor-pointer gap-2 rounded-lg border border-slate-200 p-3 text-xs has-[:checked]:border-emerald-500 has-[:checked]:bg-emerald-50">
+                                    <input type="radio" name="imp_mode" value="upsert" class="mt-0.5 h-4 w-4 border-slate-300 text-emerald-600 focus:ring-emerald-600">
+                                    <span><b class="block text-slate-800">Add or update</b><span class="text-slate-500">New store codes are added, existing ones are updated.</span></span>
+                                </label>
+                            <?php endif; ?>
+                        </div>
+                    <?php endif; ?>
+                </fieldset>
+                <label id="imp-drop" for="imp-file" class="<?= $defaultMode === '' ? 'pointer-events-none opacity-50 ' : '' ?>flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-6 py-12 text-center transition-colors hover:border-emerald-500 hover:bg-emerald-50/40">
                     <span class="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-2xl text-emerald-600"><i class="fa-solid fa-file-csv"></i></span>
                     <span class="text-sm font-semibold text-slate-700">Drop your CSV here, or click to choose a file</span>
                     <span class="text-xs text-slate-500">.csv only, up to 2 MB and <?= number_format($importMax) ?> lines. In Excel: Save As, CSV UTF-8.</span>
-                    <input id="imp-file" type="file" accept=".csv,.txt,text/csv" class="sr-only">
+                    <input id="imp-file" type="file" accept=".csv,.txt,text/csv" class="sr-only" <?= $defaultMode === '' ? 'disabled' : '' ?>>
                 </label>
                 <p id="imp-err" class="hidden rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700" role="alert"></p>
 
@@ -873,8 +921,12 @@ window.SD_IMPORT = <?= json_encode([
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
         });
     }
+    function currentMode() {
+        var r = document.querySelector('input[name="imp_mode"]:checked');
+        return r ? r.value : 'add';
+    }
     function fresh() {
-        return { step: 1, rows: [], nextId: 1, page: 1, filter: 'all', q: '', file: '', cancel: false, started: 0, took: 0, removed: 0, timer: null, checkTimer: null, queue: {}, rfilter: 'failed', checking: 0 };
+        return { mode: 'add', step: 1, rows: [], nextId: 1, page: 1, filter: 'all', q: '', file: '', cancel: false, started: 0, took: 0, removed: 0, timer: null, checkTimer: null, queue: {}, rfilter: 'failed', checking: 0 };
     }
     state = fresh();
 
@@ -1013,6 +1065,7 @@ window.SD_IMPORT = <?= json_encode([
         state = fresh();
         state.rows = rows;
         state.file = name;
+        state.mode = currentMode();
         $('imp-file-name').textContent = name;
         setStep(2);
         renderTable();
@@ -1047,6 +1100,7 @@ window.SD_IMPORT = <?= json_encode([
             if (!x) { r.sv = 'skipped'; r.reason = 'No answer from the server for this line.'; return; }
             r.sv = x.status === 'ready' ? 'ready' : 'skipped';
             r.reason = x.reason || '';
+            r.op = x.op || '';
         });
     }
 
@@ -1060,7 +1114,7 @@ window.SD_IMPORT = <?= json_encode([
             if (idx >= list.length) { return Promise.resolve(); }
             var part = list.slice(idx, idx + CHECK_CHUNK);
             idx += CHECK_CHUNK;
-            return post(CFG.checkUrl, { rows: part.map(payload) }).then(function (j) {
+            return post(CFG.checkUrl, { rows: part.map(payload), mode: state.mode }).then(function (j) {
                 applyCheck(part, j);
             }).catch(function (e) {
                 part.forEach(function (r) { r.sv = 'skipped'; r.reason = 'Could not check this line: ' + e.message; });
@@ -1094,6 +1148,11 @@ window.SD_IMPORT = <?= json_encode([
         }[s];
         return '<span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ' + m[1] + '"><i class="fa-solid ' + m[2] + '"></i> ' + m[0] + '</span>';
     }
+    // "New" / "Update": what this line will do (add a store or update an existing one)
+    function opTag(r, s) {
+        if (!r.op || s !== 'ready') { return ''; }
+        return ' <span class="rounded-full px-1.5 py-0.5 text-[10px] font-semibold ' + (r.op === 'update' ? 'bg-violet-50 text-violet-700 border border-violet-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200') + '">' + (r.op === 'update' ? 'Update' : 'New') + '</span>';
+    }
     function inputCls(bad) {
         return 'w-full rounded border px-1.5 py-1 text-xs text-slate-800 focus:border-emerald-600 focus:bg-white focus:outline-none ' +
             (bad ? 'border-rose-400 bg-rose-50' : 'border-transparent bg-transparent hover:border-slate-300');
@@ -1102,7 +1161,7 @@ window.SD_IMPORT = <?= json_encode([
         var s = st(r), w = why(r);
         var h = '<tr data-id="' + r.id + '" class="' + (s === 'failed' ? 'bg-rose-50/40' : '') + '">';
         h += '<td class="px-2 py-1 font-mono text-[11px] text-slate-400">' + r.line + '</td>';
-        h += '<td class="px-2 py-1 whitespace-nowrap" data-cell="badge">' + badge(s) + '</td>';
+        h += '<td class="px-2 py-1 whitespace-nowrap" data-cell="badge">' + badge(s) + opTag(r, s) + '</td>';
         h += '<td class="px-2 py-1 text-[11px] text-rose-700" style="min-width:200px" data-cell="why">' + esc(w) + '</td>';
         COLS.forEach(function (c) {
             var bad = s === 'failed' && fieldBad(w, c[0]);
@@ -1149,7 +1208,7 @@ window.SD_IMPORT = <?= json_encode([
             if (!r) { return; }
             var s = st(r), w = why(r);
             tr.className = s === 'failed' ? 'bg-rose-50/40' : '';
-            tr.querySelector('[data-cell="badge"]').innerHTML = badge(s);
+            tr.querySelector('[data-cell="badge"]').innerHTML = badge(s) + opTag(r, s);
             tr.querySelector('[data-cell="why"]').textContent = w;
             tr.querySelectorAll('input[data-f]').forEach(function (inp) {
                 inp.className = inputCls(s === 'failed' && fieldBad(w, inp.getAttribute('data-f')));
@@ -1167,6 +1226,7 @@ window.SD_IMPORT = <?= json_encode([
         var btn = $('imp-go');
         btn.disabled = c.ready === 0 || c.checking > 0;
         $('imp-go-n').textContent = c.ready.toLocaleString();
+        $('imp-go-verb').textContent = CFG.needsApproval ? 'Send' : (state.mode === 'update' ? 'Update' : 'Import');
         $('imp-rm-failed').classList.toggle('hidden', c.failed === 0);
         ['all', 'ready', 'failed'].forEach(function (f) {
             var b = $('imp-f-' + f);
@@ -1196,7 +1256,7 @@ window.SD_IMPORT = <?= json_encode([
         $('imp-elapsed').textContent = '0:00';
         state.timer = setInterval(function () { $('imp-elapsed').textContent = fmt(Date.now() - state.started); }, 500);
 
-        post(CFG.submitUrl, { file: state.file, rows: todo.map(payload) }).then(function (j) {
+        post(CFG.submitUrl, { file: state.file, rows: todo.map(payload), mode: state.mode }).then(function (j) {
             clearInterval(state.timer);
             var by = {};
             (j.results || []).forEach(function (x) { by[x.line] = x; });
@@ -1250,7 +1310,7 @@ window.SD_IMPORT = <?= json_encode([
             if (idx >= total || state.cancel || fatal) { return Promise.resolve(); }
             var part = todo.slice(idx, idx + COMMIT_CHUNK);
             idx += COMMIT_CHUNK;
-            return post(CFG.commitUrl, { rows: part.map(payload) }).then(function (j) {
+            return post(CFG.commitUrl, { rows: part.map(payload), mode: state.mode }).then(function (j) {
                 var by = {};
                 (j.results || []).forEach(function (x) { by[x.line] = x; });
                 part.forEach(function (r) {
@@ -1496,7 +1556,11 @@ window.SD_IMPORT = <?= json_encode([
                     form.action = base + '/' + r.id + '/update';
                     form.elements['outlet_description'].value = r.outlet_description || '';
                     form.elements['branch_id'].value = r.branch_id || '';
-                    form.elements['store_status'].value = r.store_status || '';
+                    var stSel = form.elements['store_status'];
+                    stSel.value = r.store_status || '';
+                    if (r.store_status && stSel.value !== r.store_status) {   // an old status that is not in the list any more: keep it
+                        var keep = document.createElement('option'); keep.value = r.store_status; keep.textContent = r.store_status + ' (old)'; stSel.appendChild(keep); stSel.value = r.store_status;
+                    }
                     form.elements['store_code'].value = r.store_code || '';
                     form.elements['erp_code'].value = r.erp_code || '';
                     form.elements['ownership_type'].value = r.ownership_type || '';

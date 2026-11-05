@@ -3,13 +3,11 @@
     "",
     "\\app",
     "\\app\\Controllers",
-    "\\app\\Database\\Migrations",
-    "\\app\\Database\\Seeds",
     "\\app\\Views",
     "\\app\\Views\\auth",
+    "\\app\\Views\\layouts",
     "\\public",
     "\\public\\assets"
   ],
-  "SelectedNode": "\\writable",
   "PreviewInSolutionExplorer": false
 }

@@ -79,6 +79,7 @@ $routes->group('modules', static function ($routes) {
     $routes->post('(:num)/permissions/(:num)/remove', 'ModuleSettings::removePermission/$1/$2');
     $routes->post('(:num)/admins', 'ModuleSettings::saveAdmins/$1');              // Save administrators + approval settings
     $routes->post('(:num)/notifications', 'ModuleNotifications::save/$1');        // Notifications tab (In-App / Email per event)
+    $routes->post('(:num)/statuses', 'ModuleStatusesController::save/$1');        // Statuses tab (name, colour, order, active)
 });
 
 $routes->group('roles', static function ($routes) {

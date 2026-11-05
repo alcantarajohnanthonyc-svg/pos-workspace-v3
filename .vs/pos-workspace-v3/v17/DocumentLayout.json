@@ -56,10 +56,8 @@
               "RelativeDocumentMoniker": "app\\Controllers\\Login.php",
               "ToolTip": "D:\\XAMPP\\htdocs\\pos-workspace-v3\\app\\Controllers\\Login.php",
               "RelativeToolTip": "app\\Controllers\\Login.php",
-              "ViewState": "AgIAAC8AAAAAAAAAAAAIwIcAAAA6AAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001001|",
-              "WhenOpened": "2026-10-22T05:16:06.792Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-10-22T05:16:06.792Z"
             },
             {
               "$type": "Document",
@@ -71,8 +69,7 @@
               "RelativeToolTip": "app\\Views\\auth\\account_pending.php",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAkAAAAEAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001001|",
-              "WhenOpened": "2026-10-22T05:14:38.912Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-10-22T05:14:38.912Z"
             },
             {
               "$type": "Document",
@@ -84,8 +81,7 @@
               "RelativeToolTip": "env",
               "ViewState": "AgIAAAYAAAAAAAAAAAAAABUAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001001|",
-              "WhenOpened": "2026-10-22T05:11:30.891Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-10-22T05:11:30.891Z"
             },
             {
               "$type": "Document",
@@ -121,8 +117,7 @@
               "RelativeToolTip": "app\\Views\\auth\\login.php",
               "ViewState": "AgIAAMoAAAAAAAAAAAAswO0AAAAHAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001001|",
-              "WhenOpened": "2026-10-22T03:30:41.334Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-10-22T03:30:41.334Z"
             },
             {
               "$type": "Document",
@@ -134,8 +129,7 @@
               "RelativeToolTip": "app\\Config\\Routes.php",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAwAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001001|",
-              "WhenOpened": "2026-10-22T03:21:54.361Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-10-22T03:21:54.361Z"
             }
           ]
         }

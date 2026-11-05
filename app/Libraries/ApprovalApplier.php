@@ -131,7 +131,7 @@ class ApprovalApplier
         return null;
     }
 
-    /** Insert the lines of an approved import. Store codes that exist by now are skipped, not an error. */
+    /** Apply the lines of an approved import: new stores are inserted, existing ones (by id) are updated. */
     private static function storeImport($db, array $after, ?string &$summary): ?string
     {
         $rows = is_array($after['rows'] ?? null) ? $after['rows'] : [];
@@ -145,6 +145,7 @@ class ApprovalApplier
         }
 
         $insert  = [];
+        $update  = [];
         $skipped = 0;
         foreach ($rows as $row) {
             if (! is_array($row)) {
@@ -161,6 +162,19 @@ class ApprovalApplier
 
                 continue;
             }
+
+            if (($row['_op'] ?? 'add') === 'update') {
+                $id = (int) ($row['_id'] ?? 0);
+                if ($id < 1 || $db->table('store_details')->where('id', $id)->countAllResults() < 1) {
+                    $skipped++;   // the store was deleted in the meantime
+
+                    continue;
+                }
+                $update[$id] = $d;
+
+                continue;
+            }
+
             $code = $d['store_code'];
             if ($code !== null && $code !== '') {
                 $k = strtolower((string) $code);
@@ -174,13 +188,24 @@ class ApprovalApplier
             $insert[] = $d;
         }
 
-        if (! $insert) {
-            return 'None of the lines can be imported (their store codes already exist).';
+        if (! $insert && ! $update) {
+            return 'None of the lines can be applied (the store codes already exist, or the stores were deleted).';
         }
         foreach (array_chunk($insert, 200) as $chunk) {
             $db->table('store_details')->insertBatch($chunk);
         }
-        $summary = 'Imported ' . count($insert) . ' of ' . count($rows) . ' lines' . ($skipped ? '; ' . $skipped . ' skipped (store code already exists)' : '') . '.';
+        foreach ($update as $id => $d) {
+            $db->table('store_details')->where('id', $id)->update($d);
+        }
+
+        $parts = [];
+        if ($insert) {
+            $parts[] = count($insert) . ' added';
+        }
+        if ($update) {
+            $parts[] = count($update) . ' updated';
+        }
+        $summary = 'Imported ' . (count($insert) + count($update)) . ' of ' . count($rows) . ' lines (' . implode(', ', $parts) . ')' . ($skipped ? '; ' . $skipped . ' skipped' : '') . '.';
 
         return null;
     }

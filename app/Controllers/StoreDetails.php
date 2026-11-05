@@ -3,6 +3,7 @@
 namespace App\Controllers;
 
 use App\Libraries\ApprovalRequests;
+use App\Libraries\ModuleStatuses;
 use App\Libraries\Notifier;
 use App\Libraries\Rbac;
 use App\Models\Rbac_model;
@@ -91,10 +92,19 @@ class StoreDetails extends BaseController
         // stores inside the user's scope with no search / filter (only used for the "no assigned branch" notice)
         $scopeTotal = $this->query($db, $scope, [], 'COUNT(*) AS n', false)->get()->getRowArray();
 
-        $statuses = array_column(
+        // statuses: the ones defined in Module Settings > Statuses (in their order), then any other value the stores still carry
+        $statusDefs   = ModuleStatuses::all(self::SLUG, true);
+        $statuses     = array_column($statusDefs, 'name');
+        $known        = array_flip(array_map('strtolower', $statuses));
+        $statusColors = ModuleStatuses::colorMap(self::SLUG);
+        foreach (array_column(
             $this->query($db, $scope, [], 'DISTINCT s.store_status AS v', false)->where('s.store_status IS NOT NULL')->where("s.store_status <> ''")->orderBy('v', 'ASC')->get()->getResultArray(),
             'v'
-        );
+        ) as $v) {
+            if (! isset($known[strtolower((string) $v)])) {
+                $statuses[] = (string) $v;
+            }
+        }
         $ownerships = array_column(
             $db->table('store_details')->select('DISTINCT ownership_type AS v', false)->where('ownership_type IS NOT NULL')->where("ownership_type <> ''")->orderBy('v', 'ASC')->get()->getResultArray(),
             'v'
@@ -113,6 +123,8 @@ class StoreDetails extends BaseController
             'stats'      => $stats,
             'scopeTotal' => (int) ($scopeTotal['n'] ?? 0),
             'statuses'   => $statuses,
+            'statusDefs' => array_column($statusDefs, 'name'),
+            'statusColors' => $statusColors,
             'ownerships' => $ownerships,
             'branches'   => $this->branchOptions($db, $scope),
             'importMax'    => self::IMPORT_MAX,
@@ -217,13 +229,16 @@ class StoreDetails extends BaseController
         if ($deny = $this->ajaxDeny('import')) {
             return $deny;
         }
+        if ($why = $this->importModeDenied($this->importMode())) {
+            return $this->jsonOut(['ok' => false, 'error' => $why], 403);
+        }
         $rows = $this->jsonRows();
         if ($rows === null) {
             return $this->jsonOut(['ok' => false, 'error' => 'Invalid data was sent.'], 400);
         }
 
         $db = \Config\Database::connect();
-        [$results] = $this->validateImportRows($db, $this->scope($db), $rows);
+        [$results] = $this->validateImportRows($db, $this->scope($db), $rows, $this->importMode());
 
         return $this->jsonOut(['ok' => true, 'results' => $results]);
     }
@@ -233,6 +248,9 @@ class StoreDetails extends BaseController
         if ($deny = $this->ajaxDeny('import')) {
             return $deny;
         }
+        if ($why = $this->importModeDenied($this->importMode())) {
+            return $this->jsonOut(['ok' => false, 'error' => $why], 403);
+        }
         $rows = $this->jsonRows();
         if ($rows === null) {
             return $this->jsonOut(['ok' => false, 'error' => 'Invalid data was sent.'], 400);
@@ -240,12 +258,27 @@ class StoreDetails extends BaseController
 
         $db = \Config\Database::connect();
         // checked again: the data or the user's access may have changed since the preview
-        [$results, $insert] = $this->validateImportRows($db, $this->scope($db), $rows);
+        [$results, $insert] = $this->validateImportRows($db, $this->scope($db), $rows, $this->importMode());
 
         if ($insert) {
+            $adds    = [];
+            $updates = [];
+            foreach ($insert as $line => $d) {
+                $op = $d['_op'] ?? 'add';
+                $id = (int) ($d['_id'] ?? 0);
+                unset($d['_op'], $d['_id']);
+                if ($op === 'update' && $id > 0) {
+                    $updates[$line] = [$id, $d];
+                } else {
+                    $adds[$line] = $d;
+                }
+            }
             $db->transStart();
-            foreach (array_chunk(array_values($insert), 200) as $chunk) {
+            foreach (array_chunk(array_values($adds), 200) as $chunk) {
                 $db->table('store_details')->insertBatch($chunk);
+            }
+            foreach ($updates as [$id, $d]) {
+                $db->table('store_details')->where('id', $id)->update($d);
             }
             $db->transComplete();
 
@@ -271,6 +304,9 @@ class StoreDetails extends BaseController
         if ($deny = $this->ajaxDeny('import')) {
             return $deny;
         }
+        if ($why = $this->importModeDenied($this->importMode())) {
+            return $this->jsonOut(['ok' => false, 'error' => $why], 403);
+        }
         if (! $this->needsApproval('import')) {
             return $this->jsonOut(['ok' => false, 'error' => 'This import does not need approval. Import the lines normally.'], 409);
         }
@@ -284,7 +320,8 @@ class StoreDetails extends BaseController
 
         $db    = \Config\Database::connect();
         $scope = $this->scope($db);
-        [$results, $insert] = $this->validateImportRows($db, $scope, $rows);
+        $importMode = $this->importMode();
+        [$results, $insert] = $this->validateImportRows($db, $scope, $rows, $importMode);
         if (! $insert) {
             return $this->jsonOut(['ok' => false, 'error' => 'None of the lines is valid, so nothing was sent for approval.'], 422);
         }
@@ -327,13 +364,16 @@ class StoreDetails extends BaseController
             'before'       => null,
             'after'        => [
                 'file'     => $file,
+                'import_mode' => ['add' => 'Add new stores only', 'update' => 'Update existing stores only', 'upsert' => 'Add new and update existing'][$importMode],
                 'lines'    => count($insert),
+                'new_stores'     => count(array_filter($insert, static fn ($d) => ($d['_op'] ?? 'add') === 'add')),
+                'updated_stores' => count(array_filter($insert, static fn ($d) => ($d['_op'] ?? 'add') === 'update')),
                 'skipped'  => count($rows) - count($insert),
                 'branches' => $shown,
                 'sample'   => implode('; ', $sample) . (count($insert) > 5 ? ' …' : ''),
                 'rows'     => $rowsOut,
             ],
-            'field_labels' => ['file' => 'File', 'lines' => 'Lines to import', 'skipped' => 'Lines with errors (not sent)', 'branches' => 'Branches', 'sample' => 'First lines', 'rows' => false],
+            'field_labels' => ['file' => 'File', 'import_mode' => 'Import type', 'new_stores' => 'New stores', 'updated_stores' => 'Stores to update', 'lines' => 'Lines to import', 'skipped' => 'Lines with errors (not sent)', 'branches' => 'Branches', 'sample' => 'First lines', 'rows' => false],
         ]);
         if (! $id) {
             return $this->jsonOut(['ok' => false, 'error' => 'The request could not be sent for approval. Please try again.'], 500);
@@ -398,6 +438,13 @@ class StoreDetails extends BaseController
             }
             if (! $changes) {
                 return $this->jsonOut(['ok' => false, 'error' => 'Choose what to change: the status or the ownership.'], 422);
+            }
+            if (isset($changes['store_status'])) {
+                $canon = ModuleStatuses::canonical(self::SLUG, $changes['store_status']);
+                if ($canon === null || $canon === '') {
+                    return $this->jsonOut(['ok' => false, 'error' => 'Choose a valid status: ' . implode(', ', ModuleStatuses::names(self::SLUG)) . '.'], 422);
+                }
+                $changes['store_status'] = $canon;
             }
         }
 
@@ -575,6 +622,31 @@ class StoreDetails extends BaseController
     }
 
     /**
+     * The import type needs the matching RBAC action too:  add = create,  update = update,  add or update = both.
+     * (Super Admin passes every allowed() check.)
+     */
+    private function importModeDenied(string $mode): ?string
+    {
+        if (in_array($mode, ['add', 'upsert'], true) && ! $this->allowed('create')) {
+            return 'You do not have permission to add stores, so you cannot use this import type.';
+        }
+        if (in_array($mode, ['update', 'upsert'], true) && ! $this->allowed('update')) {
+            return 'You do not have permission to update stores, so you cannot use this import type.';
+        }
+
+        return null;
+    }
+
+    /** What the import should do: add new stores only | update existing stores only | add or update. */
+    private function importMode(): string
+    {
+        $b = json_decode((string) $this->request->getBody(), true);
+        $m = is_array($b) ? (string) ($b['mode'] ?? 'add') : 'add';
+
+        return in_array($m, ['add', 'update', 'upsert'], true) ? $m : 'add';
+    }
+
+    /**
      * Check every parsed line.
      *
      * @param list<array{line:int,raw:array<string,string>}> $parsed
@@ -582,7 +654,7 @@ class StoreDetails extends BaseController
      * @return array{0:list<array<string,string|int>>,1:array<int,array>}  [results, insertRowsByLine]
      *   result = line, company, branch, store_code, outlet, status (ready|skipped), reason
      */
-    private function validateImportRows($db, array $scope, array $parsed): array
+    private function validateImportRows($db, array $scope, array $parsed, string $mode = 'add'): array
     {
         $c = $this->cols($db);
 
@@ -616,10 +688,11 @@ class StoreDetails extends BaseController
 
         $allowedIds = array_flip(array_map('intval', array_column($this->branchOptions($db, $scope), 'id')));
 
-        $seen = array_flip(array_map('strtolower', array_column(
-            $db->table('store_details')->select('store_code')->where("store_code IS NOT NULL AND store_code <> ''")->get()->getResultArray(),
-            'store_code'
-        )));
+        // existing stores by store code: the key that decides "add" or "update"
+        $existing = [];
+        foreach ($db->table('store_details')->where("store_code IS NOT NULL AND store_code <> ''")->get()->getResultArray() as $exRow) {
+            $existing[strtolower((string) $exRow['store_code'])] ??= $exRow;
+        }
         $firstLine = [];
 
         $pick = static function (array $raw, array $keys): string {
@@ -652,6 +725,45 @@ class StoreDetails extends BaseController
                 return $res;
             };
 
+            // ---- add or update?  (the store code finds the existing store)
+            $codeRaw = $pick($raw, ['store_code']);
+            $ex      = $codeRaw !== '' ? ($existing[strtolower($codeRaw)] ?? null) : null;
+            if ($mode === 'update') {
+                if ($codeRaw === '') {
+                    $results[] = $fail('Store code is required to update a store.');
+
+                    continue;
+                }
+                if (! $ex) {
+                    $results[] = $fail('No store with the code "' . $codeRaw . '" to update.');
+
+                    continue;
+                }
+                $op = 'update';
+            } elseif ($ex) {
+                if ($mode === 'add') {
+                    $results[] = $fail('Store code "' . $codeRaw . '" already exists. Use "Update" or "Add or update" to change it.');
+
+                    continue;
+                }
+                $op = 'update';
+            } else {
+                $op = 'add';
+            }
+            $res['op'] = $op;
+
+            if ($op === 'update' && $brRef === '' && $coRef === '') {
+                // update without company / branch in the file: the store keeps its branch
+                $branch = $brById[(int) ($ex['branch_id'] ?? 0)] ?? null;
+                if (! $branch) {
+                    $results[] = $fail('The current branch of this store was not found.');
+
+                    continue;
+                }
+                $companyId      = (int) ($branch['company_id'] ?? 0);
+                $res['branch']  = (string) $branch['name'];
+                $res['company'] = (string) ($branch['company'] ?? '');
+            } else {
             // ---- company
             $companyId = 0;
             if ($coRef !== '') {
@@ -697,6 +809,8 @@ class StoreDetails extends BaseController
                 $res['company'] = (string) ($branch['company'] ?? '');
             }
 
+            }
+
             // ---- the user's access
             if (empty($scope['all'])) {
                 if (! empty($scope['fc']) && ! in_array($companyId, $scope['companyIds'], true)) {
@@ -711,8 +825,8 @@ class StoreDetails extends BaseController
                 }
             }
 
-            // ---- fields
-            [$data, $error] = $this->normalize([
+            // ---- fields (update: a blank cell keeps what the store already has)
+            $in = [
                 'branch_id'             => (int) $branch['id'],
                 'store_code'            => $pick($raw, ['store_code']),
                 'erp_code'              => $pick($raw, ['erp_code']),
@@ -722,23 +836,60 @@ class StoreDetails extends BaseController
                 'store_status'          => $pick($raw, ['store_status']),
                 'date_opened'           => $pick($raw, ['date_opened']),
                 'last_pos_selling_date' => $pick($raw, ['last_pos_selling_date']),
-            ]);
+            ];
+            if ($op === 'update') {
+                foreach (['erp_code', 'outlet_description', 'address', 'ownership_type', 'store_status', 'date_opened', 'last_pos_selling_date'] as $k) {
+                    if ($in[$k] === '') {
+                        $in[$k] = (string) ($ex[$k] ?? '');
+                    }
+                }
+            }
+            [$data, $error] = $this->normalize($in);
             if ($error) {
                 $results[] = $fail($error);
 
                 continue;
             }
-
-            // ---- duplicates (database, then earlier lines of this file)
-            if ($data['store_code'] !== null) {
-                $k = strtolower($data['store_code']);
-                if (isset($seen[$k])) {
-                    $results[] = $fail(isset($firstLine[$k]) ? 'Store code "' . $data['store_code'] . '" is repeated (first on line ' . $firstLine[$k] . ').' : 'Store code "' . $data['store_code'] . '" already exists.');
+            if ($data['store_status'] !== null && ! ($op === 'update' && strcasecmp(trim((string) ($ex['store_status'] ?? '')), (string) $data['store_status']) === 0)) {
+                $canon = ModuleStatuses::canonical(self::SLUG, (string) $data['store_status']);
+                if ($canon === null) {
+                    $results[] = $fail('Status "' . $data['store_status'] . '" is not allowed. Use: ' . implode(', ', ModuleStatuses::names(self::SLUG)) . '.');
 
                     continue;
                 }
-                $seen[$k]      = true;
+                $data['store_status'] = $canon !== '' ? $canon : null;
+            }
+
+            // ---- the same store code twice in one file
+            if ($data['store_code'] !== null) {
+                $k = strtolower($data['store_code']);
+                if (isset($firstLine[$k])) {
+                    $results[] = $fail('Store code "' . $data['store_code'] . '" is repeated (first on line ' . $firstLine[$k] . ').');
+
+                    continue;
+                }
                 $firstLine[$k] = $line;
+            }
+
+            // ---- update: is anything different?
+            if ($op === 'update') {
+                $same = true;
+                foreach (['branch_id', 'store_code', 'erp_code', 'outlet_description', 'address', 'ownership_type', 'store_status', 'date_opened', 'last_pos_selling_date'] as $k) {
+                    if ((string) ($data[$k] ?? '') !== (string) ($ex[$k] ?? '')) {
+                        $same = false;
+                        break;
+                    }
+                }
+                if ($same) {
+                    $results[] = $fail('No change: the store already has these values.');
+
+                    continue;
+                }
+                $data['_op'] = 'update';
+                $data['_id'] = (int) $ex['id'];
+            } else {
+                $data['_op'] = 'add';
+                $data['_id'] = 0;
             }
 
             $res['status'] = 'ready';
@@ -1308,6 +1459,15 @@ class StoreDetails extends BaseController
         $okBranches = array_map('intval', array_column($this->branchOptions($db, $scope), 'id'));
         if (! in_array((int) $data['branch_id'], $okBranches, true)) {
             return [null, 'Please choose a branch within your company / branch scope.'];
+        }
+
+        if ($data['store_status'] !== null) {
+            $current = $ignoreId > 0 ? (string) ($db->table('store_details')->select('store_status')->where('id', $ignoreId)->get()->getRowArray()['store_status'] ?? '') : '';
+            $canon   = strcasecmp(trim($current), (string) $data['store_status']) === 0 ? $data['store_status'] : ModuleStatuses::canonical(self::SLUG, (string) $data['store_status']);   // an unchanged old status is kept
+            if ($canon === null) {
+                return [null, 'Choose a valid status: ' . implode(', ', ModuleStatuses::names(self::SLUG)) . '.'];
+            }
+            $data['store_status'] = $canon !== '' ? $canon : null;
         }
 
         if ($data['store_code'] !== null) {
