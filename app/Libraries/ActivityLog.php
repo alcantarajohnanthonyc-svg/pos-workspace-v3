@@ -117,4 +117,4 @@ class ActivityLog
             log_message('error', 'ActivityLog failed: {m}', ['m' => $e->getMessage()]);
         }
     }
-}
+} 
