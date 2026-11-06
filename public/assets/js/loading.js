@@ -173,5 +173,46 @@
         if (ms > 0) { setTimeout(hide, ms); }
     });
 
+
+     /* ---------- page navigation (link click + GET form) ---------- */
+    var NAV_DELAY = 400;     // lalabas lang kung lampas 400 ms ang paghihintay
+    var NAV_SAFETY = 20000;  // huwag mag-stuck kung hindi pala nag-navigate (hal. download)
+    var navTimer = null, navSafety = null;
+
+    function navShow() {
+        if (navTimer || dlg.open) { return; }
+        navTimer = setTimeout(function () {
+            navTimer = null;
+            show('');
+            navSafety = setTimeout(function () { hideAll(); }, NAV_SAFETY);
+        }, NAV_DELAY);
+    }
+    window.addEventListener('pageshow', function () {
+        clearTimeout(navTimer); navTimer = null;
+        clearTimeout(navSafety); navSafety = null;
+    });
+
+    document.addEventListener('click', function (e) {
+        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) { return; }
+        var a = e.target.closest ? e.target.closest('a[href]') : null;
+        if (!a) { return; }
+        if ((a.target && a.target !== '_self') || a.hasAttribute('download') ||
+            a.hasAttribute('data-loading') || a.hasAttribute('data-loading-skip')) { return; }
+        var h = a.getAttribute('href') || '';
+        if (h === '' || h.charAt(0) === '#' || /^(javascript|mailto|tel):/i.test(h)) { return; }
+        var u;
+        try { u = new URL(a.href, location.href); } catch (x) { return; }
+        if (u.origin !== location.origin) { return; }
+        if (u.pathname === location.pathname && u.search === location.search) { return; }
+        navShow();
+    });
+
+    /* GET forms (search / filter) na walang data-loading */
+    document.addEventListener('submit', function (e) {
+        var f = e.target;
+        if (e.defaultPrevented || !(f instanceof HTMLFormElement)) { return; }
+        if (f.hasAttribute('data-loading') || f.hasAttribute('data-loading-skip') || f.closest('[data-loading="off"]')) { return; }
+        if ((f.method || 'get').toLowerCase() === 'get' && f.target !== '_blank') { navShow(); }
+    });
     window.addEventListener('pageshow', hideAll);
 })();

@@ -108,13 +108,32 @@ class ApprovalRequests
             $who   = Notifier::nameOf($requesterId);
             $verb  = Notifier::verb((string) $d['action_key'], (string) ($d['action_label'] ?? ''));
             $label = (string) ($d['target_label'] ?? '');
+                      $actKey   = strtolower(trim((string) $d['action_key']));
+            $afterArr = is_array($d['after'] ?? null) ? $d['after'] : [];
+            $hasLines = $actKey === 'import' || (empty($d['target_id']) && in_array($actKey, ['update', 'delete'], true));
+            $mode     = (($afterArr['mode'] ?? '') === 'bulk' || in_array($actKey, ['import', 'export'], true)) ? 'info'
+                      : (in_array($actKey, ['create', 'delete', 'update'], true) ? $actKey : 'info');
+            $modRow   = $db->table('rbac_modules')->select('name')->where('slug', $slug)->get()->getRowArray();
+
             Notifier::send(
                 $slug,
                 'approval_request',
                 [$approvers['current'] ?? null, $approvers['backup'] ?? null],
                 'Approval needed',
                 ($label !== '' ? $who . ' asked to ' . $verb . ' “' . $label . '”.' : $who . ' sent a request: ' . (string) ($d['action_label'] ?? $verb) . '.') . "\nRef: " . self::reference($id),
-                'approval-queue/show/' . $id
+                'approval-queue/show/' . $id,
+                [
+                    'approval' => ['request_id' => $id, 'by_email' => ! $hasLines],   // many lines: review in the app only
+                    'facts'    => [
+                        'Module'       => (string) ($modRow['name'] ?? $slug),
+                        'Action'       => (string) ($d['action_label'] ?? ''),
+                        'Requested by' => $who,
+                        'Reference'    => self::reference($id),
+                        'Scope'        => (string) ($d['scope_text'] ?? ''),
+                    ],
+                    'mode'     => $mode,
+                    'changes'  => self::emailChanges($d),
+                ]
             );
 
             return $id;
@@ -353,6 +372,40 @@ class ApprovalRequests
         return ['total' => $total, 'items' => $items];
     }
 
+        /** Rows for the approval email: [label, before, after]. Fields whose label is false are technical and hidden. */
+    public static function emailChanges(array $d): array
+    {
+        $before = is_array($d['before'] ?? null) ? $d['before'] : [];
+        $after  = is_array($d['after'] ?? null) ? $d['after'] : [];
+        $labels = is_array($d['field_labels'] ?? null) ? $d['field_labels'] : [];
+        $act    = strtolower(trim((string) ($d['action_key'] ?? '')));
+        $flat   = static function ($v): string {
+            if ($v === null) {
+                return '';
+            }
+            if (is_bool($v)) {
+                return $v ? 'Yes' : 'No';
+            }
+
+            return is_array($v) ? (string) json_encode($v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : trim((string) $v);
+        };
+
+        $out = [];
+        foreach (array_unique(array_merge(array_keys($before), array_keys($after))) as $k) {
+            if (array_key_exists($k, $labels) && $labels[$k] === false) {
+                continue;
+            }
+            $b = $flat($before[$k] ?? null);
+            $a = $flat($after[$k] ?? null);
+            if ($act === 'update' && $b === $a) {
+                continue;   // unchanged field: not shown
+            }
+            $out[] = [(string) ($labels[$k] ?? ucwords(str_replace(['_', '-'], ' ', (string) $k))), mb_substr($b, 0, 300), mb_substr($a, 0, 300)];
+        }
+
+        return array_slice($out, 0, 25);
+    }
+    
     public static function reference(int $id): string
     {
         $row = \Config\Database::connect()->table('approval_requests')->select('reference_no')->where('id', $id)->get()->getRowArray();

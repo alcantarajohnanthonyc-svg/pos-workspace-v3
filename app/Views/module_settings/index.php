@@ -9,6 +9,7 @@ $parentModules = $parentModules ?? [];
 $availableActions = $availableActions ?? [];
 $can           = $can ?? [];          // deny by default: buttons show only when the controller sent true
 $canCreate     = ! empty($can['create']);
+$canReorder    = ! empty($can['update']);   // drag & drop needs "update"
 $canToggle     = ! empty($can['toggle_status']);
 
 $isEnabled = static fn (array $m): bool => strtolower((string) ($m['status'] ?? 'enabled')) === 'enabled';
@@ -84,7 +85,8 @@ $closeBtn = 'flex h-8 w-8 items-center justify-center rounded-md text-slate-500 
         <div class="overflow-x-auto">
             <table class="w-full text-left text-xs text-slate-600" id="modules-table">
                 <thead class="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                    <tr>
+                     <tr>
+                        <th scope="col" class="w-8 px-2 py-3"><span class="sr-only">Move</span></th>
                         <th scope="col" class="px-4 py-3">Module</th>
                         <th scope="col" class="px-4 py-3">Type</th>
                         <th scope="col" class="px-4 py-3">Page URL</th>
@@ -100,10 +102,20 @@ $closeBtn = 'flex h-8 w-8 items-center justify-center rounded-md text-slate-500 
                         $isCat = (int) ($m['is_category'] ?? 0) === 1;
                         $acts  = $m['actions'] ?? [];
                         $lock  = ($m['slug'] ?? '') === 'module_setting';   // can never be switched off
+                        $depth = (int) ($m['depth'] ?? 0);
+                        $kids  = (int) ($m['child_count'] ?? 0);
                     ?>
-                        <tr class="module-row transition-colors hover:bg-slate-50/70" data-status="<?= $on ? 'enabled' : 'disabled' ?>">
+                        <tr class="module-row transition-colors hover:bg-slate-50/70" data-status="<?= $on ? 'enabled' : 'disabled' ?>"
+                            data-id="<?= (int) $m['id'] ?>" data-parent="<?= $depth ? (int) $m['parent_id'] : 0 ?>" data-cat="<?= $isCat ? 1 : 0 ?>">
+                            <td class="w-8 px-2 py-3 text-center">
+                                <?php if ($canReorder): ?>
+                                    <span class="drag-handle inline-flex h-7 w-6 cursor-grab items-center justify-center rounded text-slate-300 hover:bg-slate-100 hover:text-slate-600 active:cursor-grabbing"
+                                          draggable="true" title="Drag to change the order, or drop on a category to put it inside"><i class="fa-solid fa-grip-vertical"></i></span>
+                                <?php endif; ?>
+                            </td>
                             <td class="px-4 py-3">
-                                <div class="flex items-center gap-3">
+                                <div class="flex items-center gap-3" style="padding-left: <?= $depth * 28 ?>px">
+                                    <?php if ($depth): ?><span class="text-slate-300" aria-hidden="true">└</span><?php endif; ?>
                                     <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-emerald-50 text-sm text-emerald-600 <?= $on ? '' : 'opacity-50' ?>">
                                         <?= module_icon_html($m['icon'] ?? '', 'h-full w-full p-1') ?>
                                     </div>
@@ -114,7 +126,14 @@ $closeBtn = 'flex h-8 w-8 items-center justify-center rounded-md text-slate-500 
                                                 <span class="rounded-full bg-sky-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-sky-700"><?= esc($m['badge']) ?></span>
                                             <?php endif; ?>
                                         </div>
-                                        <div class="module-slug truncate font-mono text-[10px] text-slate-400"><?= esc($m['slug']) ?></div>
+                                      <div class="module-slug truncate font-mono text-[10px] text-slate-400"><?= esc($m['slug']) ?></div>
+                                        <?php if ($isCat): ?>
+                                            <?php if ($kids > 0): ?>
+                                                <span class="mt-0.5 inline-block rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700"><i class="fa-solid fa-folder-open"></i> <?= $kids ?> module<?= $kids === 1 ? '' : 's' ?> inside</span>
+                                            <?php else: ?>
+                                                <span class="mt-0.5 inline-block rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">Empty: drag a module here</span>
+                                            <?php endif; ?>
+                                        <?php endif; ?>
                                     </div>
                                 </div>
                             </td>
@@ -166,7 +185,7 @@ $closeBtn = 'flex h-8 w-8 items-center justify-center rounded-md text-slate-500 
                         </tr>
                     <?php endforeach; ?>
                     <tr id="no-results" class="<?= $modules ? 'hidden' : '' ?>">
-                        <td colspan="7" class="px-4 py-10 text-center text-slate-400">
+                        <td colspan="8" class="px-4 py-10 text-center text-slate-400">
                             <i class="fa-solid fa-cubes-stacked mb-2 text-lg"></i>
                             <p class="text-xs">No modules found.</p>
                         </td>
@@ -267,6 +286,132 @@ $closeBtn = 'flex h-8 w-8 items-center justify-center rounded-md text-slate-500 
         </div>
     </form>
 </dialog>
+<?php endif; ?>
+
+
+<?php if ($canReorder): ?>
+<style>
+    .dz-before > td { box-shadow: inset 0 3px 0 #059669; }
+    .dz-after  > td { box-shadow: inset 0 -3px 0 #059669; }
+    .dz-into   > td { background-color: #d1fae5; }
+</style>
+<script>
+/* Drag & drop: reorder modules and put a module inside a category.
+   - top / bottom part of a row  -> place before / after that row (same parent as that row)
+   - middle of a CATEGORY row    -> put the module inside that category (last child)
+   - a category can never go inside another category */
+(function () {
+    var body = document.querySelector('#modules-table tbody');
+    if (!body || !document.querySelector('.drag-handle')) { return; }
+
+    var URL_  = <?= json_encode(base_url('modules/reorder')) ?>;
+    var HEAD  = <?= json_encode(csrf_header()) ?>;
+    var token = <?= json_encode(csrf_hash()) ?>;
+    var drag = null, target = null, mode = '', before = '';
+
+    function rows() { return Array.prototype.slice.call(body.querySelectorAll('tr.module-row')); }
+    function kidsOf(id) { return rows().filter(function (r) { return r.dataset.parent === String(id); }); }
+    function groupOf(r) { return r.dataset.cat === '1' ? [r].concat(kidsOf(r.dataset.id)) : [r]; }
+    function snapshot() { return rows().map(function (r) { return r.dataset.id + ':' + r.dataset.parent; }).join(','); }
+    function clearMarks() { rows().forEach(function (r) { r.classList.remove('dz-before', 'dz-after', 'dz-into'); }); }
+    function insertAfter(anchor, list) {
+        var ref = anchor.nextSibling;
+        while (ref && list.indexOf(ref) >= 0) { ref = ref.nextSibling; }
+        list.forEach(function (r) { body.insertBefore(r, ref); });
+    }
+    function toast(msg, bad) {
+        var t = document.createElement('div');
+        t.setAttribute('role', 'status');
+        t.className = 'fixed bottom-5 right-5 z-[60] rounded-lg px-4 py-2.5 text-xs font-semibold text-white shadow-lg ' + (bad ? 'bg-rose-600' : 'bg-emerald-600');
+        t.textContent = msg;
+        document.body.appendChild(t);
+        setTimeout(function () { t.remove(); }, 2500);
+    }
+
+    body.addEventListener('dragstart', function (e) {
+        var h = e.target.closest ? e.target.closest('.drag-handle') : null;
+        if (!h) { return; }
+        var q = document.getElementById('search-module'), st = document.getElementById('filter-status');
+        if ((q && q.value.trim() !== '') || (st && st.value !== '')) {
+            e.preventDefault();
+            toast('Clear the search and the status filter first, then drag.', true);
+            return;
+        }
+        drag = h.closest('tr');
+        before = snapshot();
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', drag.dataset.id);
+        e.dataTransfer.setDragImage(drag, 24, 20);
+        setTimeout(function () { groupOf(drag).forEach(function (r) { r.classList.add('opacity-40'); }); }, 0);
+    });
+
+    body.addEventListener('dragover', function (e) {
+        if (!drag) { return; }
+        var tr = e.target.closest ? e.target.closest('tr.module-row') : null;
+        if (!tr || groupOf(drag).indexOf(tr) >= 0) { clearMarks(); target = null; return; }
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        var rect = tr.getBoundingClientRect(), y = (e.clientY - rect.top) / rect.height;
+        var canInto = tr.dataset.cat === '1' && drag.dataset.cat !== '1';
+        mode = canInto && y > 0.25 && y < 0.75 ? 'into' : (y < 0.5 ? 'before' : 'after');
+        clearMarks();
+        tr.classList.add('dz-' + mode);
+        target = tr;
+    });
+
+    body.addEventListener('dragleave', function (e) {
+        if (!body.contains(e.relatedTarget)) { clearMarks(); }
+    });
+
+    body.addEventListener('drop', function (e) {
+        if (!drag || !target) { return; }
+        e.preventDefault();
+        var group = groupOf(drag), t = target;
+
+        // a category cannot sit inside another category: use the parent row of the target instead
+        if (drag.dataset.cat === '1' && t.dataset.parent !== '0') {
+            var p = rows().filter(function (r) { return r.dataset.id === t.dataset.parent; })[0];
+            if (p) { t = p; }
+        }
+
+        if (mode === 'into') {
+            var kids = kidsOf(t.dataset.id).filter(function (r) { return r !== drag; });
+            insertAfter(kids.length ? kids[kids.length - 1] : t, group);
+            drag.dataset.parent = t.dataset.id;
+        } else if (mode === 'before') {
+            group.forEach(function (r) { body.insertBefore(r, t); });
+            drag.dataset.parent = drag.dataset.cat === '1' ? '0' : t.dataset.parent;
+        } else {
+            var tg = groupOf(t);
+            insertAfter(tg[tg.length - 1], group);
+            drag.dataset.parent = drag.dataset.cat === '1' ? '0' : t.dataset.parent;
+        }
+    });
+
+    body.addEventListener('dragend', function () {
+        clearMarks();
+        if (drag) { groupOf(drag).forEach(function (r) { r.classList.remove('opacity-40'); }); }
+        var changed = drag && snapshot() !== before;
+        drag = null; target = null;
+        if (changed) { save(); }
+    });
+
+    function save() {
+        var items = rows().map(function (r) { return { id: parseInt(r.dataset.id, 10), parent_id: parseInt(r.dataset.parent, 10) }; });
+        var h = { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' };
+        h[HEAD] = token;
+        fetch(URL_, { method: 'POST', headers: h, body: JSON.stringify({ items: items }), credentials: 'same-origin', loading: false })
+            .then(function (res) {
+                return res.json().catch(function () { return {}; }).then(function (j) {
+                    if (j && j.csrf) { token = j.csrf; }
+                    if (!res.ok || !j.ok) { throw new Error((j && j.error) || 'Could not save the new order.'); }
+                });
+            })
+            .then(function () { toast('Order saved.'); setTimeout(function () { window.location.reload(); }, 500); })
+            .catch(function (err) { toast(err.message, true); setTimeout(function () { window.location.reload(); }, 1800); });
+    }
+})();
+</script>
 <?php endif; ?>
 
 <script src="<?= esc(base_url('assets/js/module-form.js'), 'attr') ?>" defer></script>

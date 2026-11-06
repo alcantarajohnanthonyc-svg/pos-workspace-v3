@@ -206,14 +206,121 @@ class ApprovalQueue extends BaseController
         return $this->jsonOut(['ok' => $done > 0, 'approved' => $done, 'failed' => $failed, 'error' => $done === 0 ? 'None of the selected requests could be approved.' : null]);
     }
 
+        // ---------------------------------------------------------------- approve / reject from the email link (no login)
+
+    /** GET approval-email/{token}: shows the request and asks to confirm. Changes NOTHING (mail scanners open links). */
+    public function emailPage(string $token)
+    {
+        [$ctx, $err] = $this->emailContext($token);
+        if ($err !== null) {
+            return $this->emailView(['state' => 'error', 'message' => $err]);
+        }
+        $pre = (string) $this->request->getGet('a');
+
+        return $this->emailView($this->emailData($ctx['req'], $token) + ['state' => 'form', 'pre' => in_array($pre, ['approve', 'reject'], true) ? $pre : '']);
+    }
+
+    /** POST approval-email/{token}/decide */
+    public function emailDecide(string $token)
+    {
+        [$ctx, $err] = $this->emailContext($token);
+        if ($err !== null) {
+            return $this->emailView(['state' => 'error', 'message' => $err]);
+        }
+        $req = $ctx['req'];
+        $uid = (int) $ctx['t']['approver_id'];
+
+        if ($this->hasLines($req)) {
+            return $this->emailView(['state' => 'error', 'message' => 'This request has many lines. Please open POS Workspace and review the lines before deciding.']);
+        }
+        $decision = (string) $this->request->getPost('decision');
+        $note     = mb_substr(trim((string) $this->request->getPost('note')), 0, 500);
+        if (! in_array($decision, ['approve', 'reject'], true)) {
+            return $this->emailView($this->emailData($req, $token) + ['state' => 'form', 'pre' => '', 'error' => 'Choose Approve or Reject.']);
+        }
+        if ($decision === 'reject' && $note === '') {
+            return $this->emailView($this->emailData($req, $token) + ['state' => 'form', 'pre' => 'reject', 'error' => 'Please write the reason for rejecting this request.']);
+        }
+
+        $res = $this->decide((int) $req['id'], $decision, $note, [], $uid);
+        if ($res['code'] !== 200) {
+            return $this->emailView(['state' => 'error', 'message' => (string) ($res['body']['error'] ?? 'Could not save the decision.')]);
+        }
+
+        \Config\Database::connect()->table('approval_email_tokens')
+            ->where('request_id', (int) $req['id'])->where('used_at IS NULL', null, false)
+            ->update(['used_at' => date('Y-m-d H:i:s')]);
+
+        return $this->emailView(['state' => 'done', 'message' => (string) ($res['body']['message'] ?? 'Saved.'), 'req' => $req, 'decision' => $decision]);
+    }
+
+    /** @return array{0:?array{t:array<string,mixed>,req:array<string,mixed>},1:?string} [context, error message] */
+    private function emailContext(string $raw): array
+    {
+        $db = \Config\Database::connect();
+        if (! preg_match('/^[a-f0-9]{48}$/', $raw) || ! $db->tableExists('approval_email_tokens')) {
+            return [null, 'This link is not valid.'];
+        }
+        $t = $db->table('approval_email_tokens')->where('token_hash', hash('sha256', $raw))->get()->getRowArray();
+        if (! $t) {
+            return [null, 'This link is not valid.'];
+        }
+        if (! empty($t['used_at'])) {
+            return [null, 'This link was already used.'];
+        }
+        if (strtotime((string) $t['expires_at']) < time()) {
+            return [null, 'This link expired (48 hours). Please open POS Workspace to decide.'];
+        }
+        $req = $db->table('approval_requests')->where('id', (int) $t['request_id'])->get()->getRowArray();
+        if (! $req) {
+            return [null, 'The request was not found.'];
+        }
+        if ($req['status'] !== 'pending') {
+            return [null, 'This request was already ' . $req['status'] . '.'];
+        }
+        $acc = $db->table('usr_account')->select('account_status')->where('id', (int) $t['approver_id'])->get()->getRowArray();
+        if (! $acc || strtolower((string) $acc['account_status']) !== 'active') {
+            return [null, 'This account is not active.'];
+        }
+
+        return [['t' => $t, 'req' => $req], null];
+    }
+
+    /** an import, or a bulk update / delete: many lines, reviewed in the app only */
+    private function hasLines(array $req): bool
+    {
+        $k = strtolower((string) $req['action_key']);
+
+        return $k === 'import' || ($req['target_id'] === null && in_array($k, ['update', 'delete'], true));
+    }
+
+    private function emailData(array $req, string $token): array
+    {
+        $mod = \Config\Database::connect()->table('rbac_modules')->select('name')->where('slug', (string) $req['module_slug'])->get()->getRowArray();
+
+        return [
+            'req'       => $req,
+            'token'     => $token,
+            'module'    => (string) ($mod['name'] ?? $req['module_slug']),
+            'requester' => Notifier::nameOf((int) $req['requester_id']),
+            'diff'      => $this->buildDiff($req),
+            'hasLines'  => $this->hasLines($req),
+        ];
+    }
+
+    private function emailView(array $data)
+    {
+        return $this->response->setHeader('Cache-Control', 'no-store')->setBody(view('approval_queue/email_decide', $data));
+    }
+    
     // ------------------------------------------------------------------ decision
 
     /** @return array{code:int, body:array<string,mixed>} */
-    private function decide(int $id, string $decision, string $note, array $exclude = []): array
+       public function decide(int $id, string $decision, string $note, array $exclude = [], ?int $asUid = null): array
     {
         $db    = \Config\Database::connect();
-        $uid   = $this->userId();
-        $super = $this->isSuper();
+        $uid   = $asUid ?? $this->userId();              // from an email link: the approver of the token
+        $super = $asUid === null && $this->isSuper();    // an email decision follows the approval steps only
         $now   = date('Y-m-d H:i:s');
 
         $db->transBegin();

@@ -122,8 +122,7 @@ class Notifier
      * @param list<int|string|null> $accountIds
      * @param string|null           $url relative to the site, e.g. "approval-queue/show/5"
      */
-    public static function send(string $moduleSlug, string $event, array $accountIds, string $title, string $body = '', ?string $url = null): void
-    {
+    public static function send(string $moduleSlug, string $event, array $accountIds, string $title, string $body = '', ?string $url = null, array $extra = []): void    {
         try {
             if (! isset(self::EVENTS[$event])) {
                 log_message('notice', 'Notifier: unknown event {e}', ['e' => $event]);
@@ -177,15 +176,15 @@ class Notifier
             }
 
             if ($set['email']) {
-                self::sendEmails($users, $title, $body, $url);
+                self::sendEmails($users, $title, $body, $url, $extra);
             }
         } catch (Throwable $e) {
             log_message('error', 'Notifier::send failed: {m}', ['m' => $e->getMessage()]);
         }
     }
 
-    /** @param list<array<string,mixed>> $users */
-    private static function sendEmails(array $users, string $title, string $body, ?string $url): void
+      /** @param list<array<string,mixed>> $users */
+    private static function sendEmails(array $users, string $title, string $body, ?string $url, array $extra = []): void
     {
         $cfg = config('Email');
         if (trim((string) $cfg->fromEmail) === '') {
@@ -195,37 +194,123 @@ class Notifier
         }
 
         $mailer = \Config\Services::email();
-        $html   = self::emailHtml($title, $body, $url);
 
         foreach ($users as $u) {
             $to = trim((string) ($u['email_workspace'] ?? ''));
             if ($to === '' || ! filter_var($to, FILTER_VALIDATE_EMAIL)) {
                 continue;
             }
+
+            // approval request: each approver gets his / her OWN secret links (approve / reject from the email)
+            $links = null;
+            $ap    = $extra['approval'] ?? null;
+            if (is_array($ap) && ! empty($ap['request_id']) && ! empty($ap['by_email'])) {
+                $raw = self::approvalToken((int) $ap['request_id'], (int) $u['id']);
+                if ($raw !== null) {
+                    $links = [
+                        'approve' => base_url('approval-email/' . $raw . '?a=approve'),
+                        'reject'  => base_url('approval-email/' . $raw . '?a=reject'),
+                        'review'  => base_url('approval-email/' . $raw),
+                    ];
+                }
+            }
+
             $mailer->clear(true);
             $mailer->setMailType('html');
             $mailer->setFrom((string) $cfg->fromEmail, (string) ($cfg->fromName ?: 'POS Workspace'));
             $mailer->setTo($to);
             $mailer->setSubject($title);
-            $mailer->setMessage($html);
+            $mailer->setMessage(self::emailHtml($title, $body, $url, $extra, $links));
             if (! $mailer->send(false)) {
                 log_message('error', 'Notifier email to {to} failed: {d}', ['to' => $to, 'd' => strip_tags($mailer->printDebugger(['headers']))]);
             }
         }
     }
 
-    private static function emailHtml(string $title, string $body, ?string $url): string
+    /** One secret, 48-hour link token for one approver of one request. Only its hash is stored. */
+    private static function approvalToken(int $requestId, int $accountId): ?string
     {
+        try {
+            $db = \Config\Database::connect();
+            if (! $db->tableExists('approval_email_tokens')) {
+                return null;
+            }
+            $raw = bin2hex(random_bytes(24));   // 48 hex chars
+            $db->table('approval_email_tokens')->insert([
+                'request_id'  => $requestId,
+                'approver_id' => $accountId,
+                'token_hash'  => hash('sha256', $raw),
+                'expires_at'  => date('Y-m-d H:i:s', time() + 48 * 3600),
+                'created_at'  => date('Y-m-d H:i:s'),
+            ]);
+
+            return $raw;
+        } catch (Throwable $e) {
+            log_message('error', 'Notifier::approvalToken failed: {m}', ['m' => $e->getMessage()]);
+
+            return null;
+        }
+    }
+
+    private static function emailHtml(string $title, string $body, ?string $url, array $extra = [], ?array $links = null): string
+    {
+        $td   = 'padding:7px 10px;border-bottom:1px solid #e2e8f0;font-size:13px;vertical-align:top;';
         $t    = esc($title);
         $b    = nl2br(esc($body));
-        $link = $url ? '<p style="margin:18px 0 0"><a href="' . esc(base_url($url), 'attr') . '" style="background:#059669;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:600;display:inline-block">Open in POS Workspace</a></p>' : '';
+
+        // facts: module, action, requester, reference
+        $facts = '';
+        foreach ((array) ($extra['facts'] ?? []) as $k => $v) {
+            if (trim((string) $v) === '') {
+                continue;
+            }
+            $facts .= '<tr><td style="' . $td . 'color:#64748b;width:115px">' . esc((string) $k) . '</td><td style="' . $td . 'color:#0f172a;font-weight:600">' . esc((string) $v) . '</td></tr>';
+        }
+        $factsHtml = $facts !== '' ? '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:14px 0;border:1px solid #e2e8f0;border-radius:8px;border-collapse:separate">' . $facts . '</table>' : '';
+
+        // what changes: before -> after
+        $changesHtml = '';
+        $rows        = (array) ($extra['changes'] ?? []);
+        $mode        = (string) ($extra['mode'] ?? 'info');
+        if ($rows) {
+            $th  = 'padding:7px 10px;background:#f8fafc;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;text-align:left;';
+            $val = static fn (string $v, string $style): string => $v === '' ? '<span style="color:#94a3b8;font-style:italic">empty</span>' : '<span style="' . $style . '">' . esc($v) . '</span>';
+            $h   = '<p style="margin:16px 0 6px;font-size:13px;font-weight:700;color:#0f172a">' . ($mode === 'update' ? 'What will change' : ($mode === 'delete' ? 'Record to delete' : ($mode === 'create' ? 'New record' : 'Request details'))) . '</p>';
+            $h  .= '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e2e8f0;border-collapse:separate;border-radius:8px">';
+            if ($mode === 'update') {
+                $h .= '<tr><th style="' . $th . '">Field</th><th style="' . $th . '">Before</th><th style="' . $th . '">After</th></tr>';
+                foreach ($rows as [$label, $bef, $aft]) {
+                    $h .= '<tr><td style="' . $td . 'font-weight:600;color:#334155">' . esc((string) $label) . '</td>'
+                        . '<td style="' . $td . 'background:#fff1f2">' . $val((string) $bef, 'color:#be123c;text-decoration:line-through') . '</td>'
+                        . '<td style="' . $td . 'background:#ecfdf5">' . $val((string) $aft, 'color:#047857;font-weight:600') . '</td></tr>';
+                }
+            } else {
+                $h .= '<tr><th style="' . $th . '">Field</th><th style="' . $th . '">Value</th></tr>';
+                foreach ($rows as [$label, $bef, $aft]) {
+                    $v  = $mode === 'delete' ? (string) $bef : (string) $aft;
+                    $h .= '<tr><td style="' . $td . 'font-weight:600;color:#334155">' . esc((string) $label) . '</td><td style="' . $td . 'color:#0f172a">' . $val($v, 'color:#0f172a') . '</td></tr>';
+                }
+            }
+            $changesHtml = $h . '</table>';
+        }
+
+        // buttons
+        $btn = static fn (string $href, string $text, string $bg): string =>
+            '<a href="' . esc($href, 'attr') . '" style="background:' . $bg . ';color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:600;font-size:14px;display:inline-block;margin:0 6px 8px 0">' . esc($text) . '</a>';
+        $buttons = '';
+        if ($links) {
+            $buttons = '<p style="margin:20px 0 4px">' . $btn($links['approve'], 'Approve', '#059669') . $btn($links['reject'], 'Reject', '#dc2626') . $btn($links['review'], 'Review details', '#475569') . '</p>'
+                . '<p style="margin:6px 0 0;font-size:11px;color:#94a3b8">These links are only for you, work once and expire in 48 hours. Please do not forward this email. You will be asked to confirm before anything is saved.</p>';
+        } elseif ($url) {
+            $buttons = '<p style="margin:18px 0 0"><a href="' . esc(base_url($url), 'attr') . '" style="background:#059669;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:600;display:inline-block">Open in POS Workspace</a></p>';
+        }
 
         return '<div style="font-family:Segoe UI,Arial,sans-serif;background:#f1f5f9;padding:24px">'
-            . '<div style="max-width:520px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:24px;color:#1e293b">'
+            . '<div style="max-width:560px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:24px;color:#1e293b">'
             . '<p style="margin:0 0 4px;font-size:12px;color:#64748b">POS Workspace V3</p>'
             . '<h2 style="margin:0 0 12px;font-size:18px">' . $t . '</h2>'
             . '<p style="margin:0;font-size:14px;line-height:1.55;color:#334155">' . $b . '</p>'
-            . $link
+            . $factsHtml . $changesHtml . $buttons
             . '</div><p style="text-align:center;font-size:11px;color:#94a3b8;margin-top:12px">You receive this because of the notification settings of this module.</p></div>';
     }
 

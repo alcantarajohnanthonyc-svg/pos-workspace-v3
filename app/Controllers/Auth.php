@@ -2,6 +2,7 @@
 
 namespace App\Controllers;
 
+use App\Libraries\ActivityLog;
 use App\Models\UserInfoModel;
 use App\Models\UserModel;
 use League\OAuth2\Client\Provider\Google;
@@ -9,6 +10,10 @@ use Throwable;
 
 class Auth extends BaseController
 {
+     private const STALE_AFTER = 180;
+
+    /** seconds na walang galaw ang user bago auto-logout (3600 = 1 oras) */
+    private const IDLE_LIMIT = 3600;
     private Google $googleProvider;
 
     public function __construct()
@@ -200,6 +205,8 @@ class Auth extends BaseController
             ->first();
 
         if (!$account || empty($account['password']) || !password_verify($password, (string) $account['password'])) {
+            ActivityLog::record('auth', 'login_failed', 'account', $account['id'] ?? null, 'Failed sign-in for "' . mb_substr($identity, 0, 80) . '"', [], $account ? (int) $account['id'] : null);
+
             return redirect()->back()->withInput()->with('error', 'Invalid username/email or password.');
         }
 
@@ -265,11 +272,32 @@ class Auth extends BaseController
      *
      * @param array<string, mixed> $account
      */
-    private function hasActiveOtherSession(array $account): bool
-    {
-        $savedToken = (string) ($account['session_id'] ?? '');
-        return $savedToken !== '' && $savedToken !== (string) session()->get('login_token');
+   private function hasActiveOtherSession(array $account): bool
+{
+    $saved = (string) ($account['session_id'] ?? '');
+    if ($saved === '') {
+        return false;
     }
+
+    // 1) Same browser: its current session token, or the remembered device cookie
+    $mine   = (string) session()->get('login_token');
+    $device = (string) ($_COOKIE['pw_device'] ?? '');
+    if ($mine !== '' && hash_equals($saved, $mine)) {
+        return false;
+    }
+    if ($device !== '' && hash_equals($saved, $device)) {
+        return false;
+    }
+
+    // 2) Nobody has sent a heartbeat for a while (browser closed, PC off, session expired)
+    $ts = ! empty($account['session_last_seen']) ? strtotime((string) $account['session_last_seen']) : false;
+    if (! $ts || (time() - $ts) > self::STALE_AFTER) {
+        return false;
+    }
+
+    // 3) Really in use somewhere else
+    return true;
+}
 
     /**
      * Log the user in and claim the account for THIS browser.
@@ -285,6 +313,15 @@ class Auth extends BaseController
 
         $token = bin2hex(random_bytes(16));   /* 32 chars */
         session()->set('login_token', $token);
+        session()->set('last_activity', time());
+        setcookie('pw_device', $token, [
+            'expires'  => time() + 60 * 60 * 24 * 30,
+            'path'     => '/',
+            'secure'   => $this->request->isSecure(),
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ]);
+        ActivityLog::record('auth', 'login', 'account', $account['id'], 'Signed in', ['email' => $account['email_workspace'] ?? '', 'via' => $this->request->getPost('login_identity') !== null ? 'password' : 'google'], (int) $account['id']);
 
         $builder = (new UserModel())->builder();
 
@@ -329,9 +366,31 @@ class Auth extends BaseController
             && $row['session_id'] !== null
             && hash_equals((string) $row['session_id'], (string) session()->get('login_token'));
 
-        if (! $valid) {
+               if (! $valid) {
             session()->destroy();
             return $this->response->setStatusCode(401)->setJSON(['ok' => false]);
+        }
+
+        // ---- IDLE TIMEOUT: ang heartbeat lang ay hindi "galaw"; ang browser ang nagsasabi (?active=1)
+        $last = session()->get('last_activity');
+        if ($last === null) {
+            session()->set('last_activity', time());   // lumang session na wala pang bilang
+            $last = time();
+        }
+        if ($this->request->getGet('active') === '1') {
+            session()->set('last_activity', time());
+            $last = time();
+        }
+        if ((time() - (int) $last) > self::IDLE_LIMIT) {
+            ActivityLog::record('auth', 'logout_idle', 'account', $accountId, 'Signed out automatically (idle)', [], (int) $accountId);
+            (new UserModel())->builder()
+                ->where('id', $accountId)
+                ->where('session_id', (string) session()->get('login_token'))
+                ->update(['session_id' => null]);   // para hindi lumabas ang "Account Already Signed In"
+            setcookie('pw_device', '', ['expires' => time() - 3600, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax']);
+            session()->destroy();
+
+            return $this->response->setStatusCode(401)->setJSON(['ok' => false, 'reason' => 'idle']);
         }
 
         try {
@@ -378,8 +437,7 @@ class Auth extends BaseController
         $users = [];
         foreach ($rows as $r) {
             $ts     = ! empty($r['session_last_seen']) ? strtotime((string) $r['session_last_seen']) : false;
-            $online = ! empty($r['session_id']) && $ts && (time() - $ts) <= 120;
-
+$online = ! empty($r['session_id']) && $ts && (time() - $ts) <= self::STALE_AFTER;      
             if (! $ts) {
                 $seen = 'Never';
             } else {
@@ -467,6 +525,9 @@ class Auth extends BaseController
     {
         $accountId = session()->get('account_id');
         $token     = (string) session()->get('login_token');
+        if ($accountId) {
+            ActivityLog::record('auth', 'logout', 'account', $accountId, 'Signed out', []);
+        }
         if ($accountId && $token !== '') {
             // Release the lock only if it still belongs to THIS browser
             // (an old device that was replaced must not unlock the new device)
@@ -476,6 +537,7 @@ class Auth extends BaseController
                 ->update(['session_id' => null]);   // keep session_last_seen = "last seen" time
         }
 
+       setcookie('pw_device', '', ['expires' => time() - 3600, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax']);
         session()->destroy();
         return redirect()->to(base_url('auth/login'));
     }

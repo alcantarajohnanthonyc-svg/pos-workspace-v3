@@ -525,20 +525,27 @@ if ($notifFromDb) {
 </script>
 
 <script>
-/* Single-login heartbeat: every 15 s ask the server if this session still owns the account.
-   401 (logged in on another device, logged out, or deactivated) -> go to the login page.
-   Network errors are ignored so a bad connection never logs anyone out. */
+/* Single-login heartbeat + idle timeout.
+   Bawat 15 s tinatanong ang server. Kung may galaw ang user (mouse / keyboard / scroll / touch)
+   mula sa huling tanong, may kasamang ?active=1 para i-reset ng server ang idle timer.
+   401 = naka-login sa ibang device, nag-logout, na-deactivate, o idle na. Ang network error ay hindi nagla-logout. */
 (function () {
     var url = '<?= site_url("auth/check_token") ?>';
     var loginUrl = '<?= base_url("auth/login") ?>';
-    var busy = false;
+    var busy = false, active = false;
+
+    ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'wheel'].forEach(function (ev) {
+        document.addEventListener(ev, function () { active = true; }, { passive: true, capture: true });
+    });
 
     function check() {
         if (busy) { return; }
         busy = true;
-        fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        var wasActive = active;
+        active = false;
+        fetch(url + (wasActive ? '?active=1' : ''), { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
             .then(function (r) {
-                if (r.status === 401 || r.status === 403 || r.redirected) {
+                if (r.status === 401) {
                     window.location.href = loginUrl;
                     return null;
                 }
@@ -547,12 +554,12 @@ if ($notifFromDb) {
             .then(function (j) {
                 if (j && typeof j.unread === 'number' && window.AppNotif) { window.AppNotif.sync(j.unread); }
             })
-            .catch(function () {})
+            .catch(function () { if (wasActive) { active = true; } })
             .finally(function () { busy = false; });
     }
 
     setInterval(check, 15000);
-    document.addEventListener('visibilitychange', function () { if (!document.hidden) { check(); } });
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) { active = true; check(); } });
 })();
 </script>
 

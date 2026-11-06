@@ -2,6 +2,7 @@
 
 namespace App\Controllers;
 
+use App\Libraries\ActivityLog;
 use App\Libraries\Rbac;
 use App\Models\Rbac_model;
 
@@ -55,6 +56,8 @@ class ModuleSettings extends BaseController
             $mod['actions'] = $byModule[$mod['id']] ?? [];
         }
         unset($mod);
+
+        $modules = $this->treeOrder($modules);   // children sit right under their parent
 
         return view('module_settings/index', $this->baseData('Module Settings', 'Module Settings', [
             ['label' => 'Home', 'url' => 'dashboard'],
@@ -473,6 +476,114 @@ class ModuleSettings extends BaseController
 
         return redirect()->back()->with('success', 'Administrators and approval settings saved.')->with('tab', 'admins');
     }
+
+    /**
+     * POST modules/reorder   body: {"items":[{"id":3,"parent_id":0}, {"id":5,"parent_id":3}, ...]}
+     * The list is in display order. short_order becomes 1..n and parent_id is saved.
+     * Rules: only a category can be a parent; a category itself can never have a parent.
+     */
+    public function reorder()
+    {
+        helper('security');
+        $out = fn (array $d, int $s = 200) => $this->response->setStatusCode($s)->setJSON($d + ['csrf' => csrf_hash()]);
+
+        if (! session()->get('isLoggedIn')) {
+            return $out(['ok' => false, 'error' => 'Your session expired. Please log in again.'], 401);
+        }
+        if (! Rbac::can('module_setting', 'update')) {
+            return $out(['ok' => false, 'error' => 'You do not have permission to reorder modules.'], 403);
+        }
+
+        $body  = json_decode((string) $this->request->getBody(), true);
+        $items = is_array($body) && is_array($body['items'] ?? null) ? $body['items'] : [];
+        if (! $items || count($items) > 500) {
+            return $out(['ok' => false, 'error' => 'Invalid list.'], 422);
+        }
+
+        $db   = \Config\Database::connect();
+        $byId = [];
+        foreach ($db->table('rbac_modules')->select('id, is_category, parent_id, short_order')->get()->getResultArray() as $r) {
+            $byId[(int) $r['id']] = $r;
+        }
+
+        $clean = [];
+        $seen  = [];
+        foreach ($items as $it) {
+            $id  = (int) ($it['id'] ?? 0);
+            $pid = (int) ($it['parent_id'] ?? 0);
+            if (! isset($byId[$id]) || isset($seen[$id])) {
+                return $out(['ok' => false, 'error' => 'Unknown or repeated module in the list.'], 422);
+            }
+            if ($pid > 0) {
+                if ($pid === $id || ! isset($byId[$pid]) || (int) $byId[$pid]['is_category'] !== 1) {
+                    return $out(['ok' => false, 'error' => 'A module can only be placed inside a category.'], 422);
+                }
+                if ((int) $byId[$id]['is_category'] === 1) {
+                    return $out(['ok' => false, 'error' => 'A category cannot be placed inside another category.'], 422);
+                }
+            }
+            $seen[$id] = true;
+            $clean[]   = ['id' => $id, 'parent_id' => $pid > 0 ? $pid : null];
+        }
+
+        try {
+            $db->transBegin();
+            $n = 0;
+            foreach ($clean as $c) {
+                $n++;
+                $old = $byId[$c['id']];
+                if ((int) $old['short_order'] === $n && (int) ($old['parent_id'] ?? 0) === (int) ($c['parent_id'] ?? 0)) {
+                    continue;   // nothing changed for this row
+                }
+                $db->table('rbac_modules')->where('id', $c['id'])->update(['short_order' => $n, 'parent_id' => $c['parent_id']]);
+            }
+            if ($db->transStatus() === false) {
+                throw new \RuntimeException('The transaction failed.');
+            }
+            $db->transCommit();
+        } catch (\Throwable $e) {
+            $db->transRollback();
+            log_message('error', 'Module reorder failed: ' . $e->getMessage());
+
+            return $out(['ok' => false, 'error' => 'Could not save the new order. Please try again.'], 500);
+        }
+
+        ActivityLog::record('module_setting', 'reorder', 'module', null, 'Changed the order / parent of modules (drag and drop)', ['count' => count($clean)]);
+
+        return $out(['ok' => true]);
+    }
+
+    /** Flat list -> parents first, each followed by its children. Adds depth + child_count. */
+    private function treeOrder(array $modules): array
+    {
+        $ids  = array_map('intval', array_column($modules, 'id'));
+        $kids = [];
+        $top  = [];
+        foreach ($modules as $m) {
+            $pid = (int) ($m['parent_id'] ?? 0);
+            if ($pid > 0 && in_array($pid, $ids, true)) {
+                $kids[$pid][] = $m;
+            } else {
+                $top[] = $m;
+            }
+        }
+
+        $out = [];
+        foreach ($top as $m) {
+            $list            = $kids[(int) $m['id']] ?? [];
+            $m['depth']       = 0;
+            $m['child_count'] = count($list);
+            $out[]            = $m;
+            foreach ($list as $c) {
+                $c['depth']       = 1;
+                $c['child_count'] = 0;
+                $out[]            = $c;
+            }
+        }
+
+        return $out;
+    }
+
 
     // ---------------------------------------------------------------- helpers
 

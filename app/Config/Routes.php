@@ -71,7 +71,8 @@ $routes->group('modules', static function ($routes) {
     $routes->get('configure/(:num)', 'ModuleSettings::configure/$1');       // modules/configure/3
 
     /// Actions (POST)
-    $routes->post('create', 'ModuleSettings::create');                            // Add Module
+      $routes->post('create', 'ModuleSettings::create');                            // Add Module
+    $routes->post('reorder', 'ModuleSettings::reorder');                          // Drag & drop order / parent
     $routes->post('(:num)/details', 'ModuleSettings::updateDetails/$1');          // Edit details modal
     $routes->post('(:num)/scope', 'ModuleSettings::saveScope/$1');                // Company/Branch scope settings
     $routes->post('(:num)/status', 'ModuleSettings::setStatus/$1');                // Enable / disable (all users)
@@ -79,7 +80,6 @@ $routes->group('modules', static function ($routes) {
     $routes->post('(:num)/permissions/(:num)/remove', 'ModuleSettings::removePermission/$1/$2');
     $routes->post('(:num)/admins', 'ModuleSettings::saveAdmins/$1');              // Save administrators + approval settings
     $routes->post('(:num)/notifications', 'ModuleNotifications::save/$1');        // Notifications tab (In-App / Email per event)
-    $routes->post('(:num)/statuses', 'ModuleStatusesController::save/$1');        // Statuses tab (name, colour, order, active)
 });
 
 $routes->group('roles', static function ($routes) {
@@ -135,4 +135,31 @@ $routes->group('notifications', static function ($routes) {
     $routes->get('latest', 'Notifications::latest');              // JSON: latest unread + count (silent)
     $routes->get('open/(:num)', 'Notifications::open/$1');        // mark as read, then go to its page
     $routes->post('read-all', 'Notifications::readAll');          // Mark all as read
+    $routes->get('email-test', 'Notifications::emailTest');       // Super Admin: send a test email to yourself
 });
+
+// Status / Remarks (status lists of the modules)
+$routes->group('status-remarks', static function ($routes) {
+    $routes->get('/', 'StatusRemarks::index');                          // status-remarks
+    $routes->post('type/create', 'StatusRemarks::createType');          // add a list
+    $routes->post('type/(:num)/save', 'StatusRemarks::saveType/$1');    // edit / add / delete the statuses of a list
+    $routes->post('type/(:num)/delete', 'StatusRemarks::deleteType/$1');// delete a list
+});
+
+// Activity Log (who did what)
+$routes->get('activity-logs', 'ActivityLogs::index');
+
+// Organization (global Position and Department masterlists) - add at the end of app/Config/Routes.php
+$routes->group('organization', static function ($routes) {
+    $routes->get('/', 'Organization::index');                                              // organization
+    $routes->post('positions/save', 'Organization::savePosition');                         // add a position
+    $routes->post('positions/(:num)/save', 'Organization::savePosition/$1');               // edit a position
+    $routes->post('positions/(:num)/status', 'Organization::setPositionStatus/$1');        // activate / deactivate
+    $routes->post('departments/save', 'Organization::saveDepartment');                     // add a department
+    $routes->post('departments/(:num)/save', 'Organization::saveDepartment/$1');           // edit a department
+    $routes->post('departments/(:num)/status', 'Organization::setDepartmentStatus/$1');    // activate / deactivate
+});
+
+// Approve / reject from the email link (the secret token in the link identifies the approver)
+$routes->get('approval-email/(:segment)', 'ApprovalQueue::emailPage/$1');
+$routes->post('approval-email/(:segment)/decide', 'ApprovalQueue::emailDecide/$1');

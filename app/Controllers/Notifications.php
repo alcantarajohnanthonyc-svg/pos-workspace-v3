@@ -2,6 +2,7 @@
 
 namespace App\Controllers;
 
+use App\Libraries\EmailTemplate;
 use App\Libraries\Notifier;
 
 /**
@@ -61,6 +62,53 @@ class Notifications extends BaseController
         return $this->response->setJSON(['ok' => true, 'unread' => 0, 'csrf' => csrf_hash()]);
     }
 
+        /** GET notifications/email-test : Super Admin only. Sends a test email to your own workspace email and shows the real result. */
+    public function emailTest()
+    {
+        if (! session()->get('isLoggedIn')) {
+            return redirect()->to(base_url('auth/login'));
+        }
+        if ((int) (session()->get('user_role_id') ?? session()->get('role_id')) !== 1) {
+            return $this->response->setStatusCode(403)->setContentType('text/plain; charset=utf-8')->setBody('Super Admin only.');
+        }
+
+        $cfg  = config('Email');
+        $to   = trim((string) session()->get('email_workspace'));
+        $out  = [];
+        $out[] = 'fromEmail : ' . ($cfg->fromEmail !== '' ? $cfg->fromEmail : '(EMPTY - fill it in Config/Email.php)');
+        $out[] = 'SMTPHost  : ' . ($cfg->SMTPHost !== '' ? $cfg->SMTPHost : '(EMPTY)');
+        $out[] = 'SMTPUser  : ' . ($cfg->SMTPUser !== '' ? $cfg->SMTPUser : '(EMPTY)');
+        $out[] = 'SMTPPass  : ' . ($cfg->SMTPPass !== '' ? '(set, ' . strlen($cfg->SMTPPass) . ' characters)' : '(EMPTY)');
+        $out[] = 'Port/Crypto: ' . $cfg->SMTPPort . ' / ' . $cfg->SMTPCrypto;
+        $out[] = 'Send to   : ' . ($to !== '' ? $to : '(your account has no workspace email)');
+        $out[] = '';
+
+        if ($cfg->fromEmail === '' || $cfg->SMTPHost === '' || $cfg->SMTPUser === '' || $cfg->SMTPPass === '' || $to === '' || ! filter_var($to, FILTER_VALIDATE_EMAIL)) {
+            $out[] = 'NOT SENT: fix the EMPTY items above first.';
+
+            return $this->response->setContentType('text/plain; charset=utf-8')->setBody(implode("\n", $out) . "\n");
+        }
+
+        $mail = EmailTemplate::render('test', '', ['recipient' => Notifier::nameOf($this->userId())], 'dashboard');
+        $mailer = \Config\Services::email();
+        $mailer->clear(true);
+        $mailer->setMailType('html');
+        $mailer->setFrom((string) $cfg->fromEmail, (string) ($cfg->fromName ?: 'POS Workspace'));
+        $mailer->setTo($to);
+        $mailer->setSubject($mail['subject'] ?? 'POS Workspace test email');
+        $mailer->setMessage($mail['html'] ?? '<p>This is a test email from POS Workspace.</p>');
+
+        if ($mailer->send(false)) {
+            $out[] = 'SENT. Check the inbox (and Spam) of ' . $to;
+        } else {
+            $out[] = 'FAILED. Server answer:';
+            $out[] = trim(strip_tags($mailer->printDebugger(['headers'])));
+            log_message('error', 'Email test failed: {d}', ['d' => strip_tags($mailer->printDebugger(['headers']))]);
+        }
+
+        return $this->response->setContentType('text/plain; charset=utf-8')->setBody(implode("\n", $out) . "\n");
+    }
+    
     private function userId(): int
     {
         return (int) (session()->get('account_id') ?? session()->get('id') ?? session()->get('user_id'));

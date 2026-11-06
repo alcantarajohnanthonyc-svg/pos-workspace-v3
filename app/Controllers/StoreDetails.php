@@ -2,6 +2,7 @@
 
 namespace App\Controllers;
 
+use App\Libraries\ActivityLog;
 use App\Libraries\ApprovalRequests;
 use App\Libraries\ModuleStatuses;
 use App\Libraries\Notifier;
@@ -31,6 +32,8 @@ use App\Models\Rbac_model;
 class StoreDetails extends BaseController
 {
     private const SLUG     = 'store_details';
+    /** the status list used by the Status column (module Status / Remarks > Store Status) */
+    private const STATUS_TYPE = 'store_status';
     private const PER_PAGE = 25;
     private const IMPORT_MAX = 5000;   // lines per file (the browser reads the file)
     private const CHUNK_MAX  = 500;    // lines per check / commit request
@@ -93,10 +96,10 @@ class StoreDetails extends BaseController
         $scopeTotal = $this->query($db, $scope, [], 'COUNT(*) AS n', false)->get()->getRowArray();
 
         // statuses: the ones defined in Module Settings > Statuses (in their order), then any other value the stores still carry
-        $statusDefs   = ModuleStatuses::all(self::SLUG, true);
+        $statusDefs   = ModuleStatuses::all(self::SLUG, true, self::STATUS_TYPE);
         $statuses     = array_column($statusDefs, 'name');
         $known        = array_flip(array_map('strtolower', $statuses));
-        $statusColors = ModuleStatuses::colorMap(self::SLUG);
+        $statusColors = ModuleStatuses::colorMap(self::SLUG, self::STATUS_TYPE);
         foreach (array_column(
             $this->query($db, $scope, [], 'DISTINCT s.store_status AS v', false)->where('s.store_status IS NOT NULL')->where("s.store_status <> ''")->orderBy('v', 'ASC')->get()->getResultArray(),
             'v'
@@ -162,6 +165,7 @@ class StoreDetails extends BaseController
         }
 
         $db->table('store_details')->insert($data);
+        ActivityLog::record(self::SLUG, 'create', 'store', $db->insertID(), 'Added the store "' . $data['outlet_description'] . '"', ['after' => $data]);
         $this->notifyChange('create', (string) $data['outlet_description']);
 
         return redirect()->to(base_url('store-details'))->with('success', 'Store "' . $data['outlet_description'] . '" was added.');
@@ -190,6 +194,7 @@ class StoreDetails extends BaseController
         }
 
         $db->table('store_details')->where('id', $store['id'])->update($data);
+        ActivityLog::record(self::SLUG, 'update', 'store', $store['id'], 'Updated the store "' . $data['outlet_description'] . '"', ['changes' => ActivityLog::diff($store, $data)]);
         $this->notifyChange('update', (string) $data['outlet_description']);
 
         return redirect()->back()->with('success', 'Store "' . $data['outlet_description'] . '" was updated.');
@@ -213,6 +218,7 @@ class StoreDetails extends BaseController
         }
 
         $db->table('store_details')->where('id', $store['id'])->delete();
+        ActivityLog::record(self::SLUG, 'delete', 'store', $store['id'], 'Deleted the store "' . $store['outlet_description'] . '"', ['before' => array_intersect_key($store, array_flip(self::REQ_FIELDS))]);
         $this->notifyChange('delete', (string) $store['outlet_description']);
 
         return redirect()->back()->with('success', 'Store "' . $store['outlet_description'] . '" was deleted.');
@@ -283,6 +289,9 @@ class StoreDetails extends BaseController
             $db->transComplete();
 
             $saved = $db->transStatus() !== false;
+            ActivityLog::record(self::SLUG, 'import', 'store', null, 'Import (' . $this->importMode() . '): ' . count($adds) . ' added, ' . count($updates) . ' updated' . ($saved ? '' : ' - NOT SAVED'), [
+                'mode' => $this->importMode(), 'added' => count($adds), 'updated' => count($updates), 'saved' => $saved, 'lines' => count($rows),
+            ]);
             foreach ($results as &$res) {
                 if ($res['status'] === 'ready') {
                     $res['status'] = $saved ? 'imported' : 'skipped';
@@ -386,6 +395,10 @@ class StoreDetails extends BaseController
         }
         unset($res);
 
+        ActivityLog::record(self::SLUG, 'import_request', 'store', null, 'Sent an import for approval: ' . count($insert) . ' line(s) from "' . $file . '" (' . ApprovalRequests::reference($id) . ')', [
+            'reference' => ApprovalRequests::reference($id), 'mode' => $importMode, 'lines' => count($insert), 'file' => $file,
+        ]);
+
         return $this->jsonOut([
             'ok'       => true,
             'ref'      => ApprovalRequests::reference($id),
@@ -440,9 +453,9 @@ class StoreDetails extends BaseController
                 return $this->jsonOut(['ok' => false, 'error' => 'Choose what to change: the status or the ownership.'], 422);
             }
             if (isset($changes['store_status'])) {
-                $canon = ModuleStatuses::canonical(self::SLUG, $changes['store_status']);
+                $canon = ModuleStatuses::canonical(self::SLUG, $changes['store_status'], self::STATUS_TYPE);
                 if ($canon === null || $canon === '') {
-                    return $this->jsonOut(['ok' => false, 'error' => 'Choose a valid status: ' . implode(', ', ModuleStatuses::names(self::SLUG)) . '.'], 422);
+                    return $this->jsonOut(['ok' => false, 'error' => 'Choose a valid status: ' . implode(', ', ModuleStatuses::names(self::SLUG, self::STATUS_TYPE)) . '.'], 422);
                 }
                 $changes['store_status'] = $canon;
             }
@@ -539,6 +552,10 @@ class StoreDetails extends BaseController
                 return $this->jsonOut(['ok' => false, 'error' => 'The request could not be sent for approval. Please try again.'], 500);
             }
 
+            ActivityLog::record(self::SLUG, 'bulk_request', 'store', null, 'Sent a bulk ' . $action . ' of ' . $word . ' for approval (' . ApprovalRequests::reference($id) . ')', [
+                'reference' => ApprovalRequests::reference($id), 'action' => $action, 'changes' => $changes, 'store_ids' => array_column($items, 'id'),
+            ]);
+
             return $this->jsonOut([
                 'ok'       => true,
                 'queued'   => true,
@@ -563,6 +580,7 @@ class StoreDetails extends BaseController
         if ($db->transStatus() === false) {
             return $this->jsonOut(['ok' => false, 'error' => 'The change could not be saved. Please try again.'], 500);
         }
+        ActivityLog::record(self::SLUG, 'bulk_' . $action, 'store', null, ($action === 'update' ? 'Updated ' : 'Deleted ') . $n . ' store(s) at once', ['changes' => $changes, 'store_ids' => $applyIds, 'skipped' => $skipped]);
         $this->notifyChange($action, $n . ' store' . ($n === 1 ? '' : 's'));
 
         return $this->jsonOut(['ok' => true, 'queued' => false, 'count' => $n, 'skipped' => $skipped]);
@@ -851,9 +869,9 @@ class StoreDetails extends BaseController
                 continue;
             }
             if ($data['store_status'] !== null && ! ($op === 'update' && strcasecmp(trim((string) ($ex['store_status'] ?? '')), (string) $data['store_status']) === 0)) {
-                $canon = ModuleStatuses::canonical(self::SLUG, (string) $data['store_status']);
+                $canon = ModuleStatuses::canonical(self::SLUG, (string) $data['store_status'], self::STATUS_TYPE);
                 if ($canon === null) {
-                    $results[] = $fail('Status "' . $data['store_status'] . '" is not allowed. Use: ' . implode(', ', ModuleStatuses::names(self::SLUG)) . '.');
+                    $results[] = $fail('Status "' . $data['store_status'] . '" is not allowed. Use: ' . implode(', ', ModuleStatuses::names(self::SLUG, self::STATUS_TYPE)) . '.');
 
                     continue;
                 }
@@ -934,6 +952,7 @@ class StoreDetails extends BaseController
             $db    = \Config\Database::connect();
             $scope = $this->scope($db);
             $rows  = $this->query($db, $scope, $filters)->orderBy('s.id', 'ASC')->get()->getResultArray();
+            ActivityLog::record(self::SLUG, $requestId > 0 ? 'export_download' : 'export', 'store', $requestId > 0 ? $requestId : null, 'Exported ' . count($rows) . ' store(s) to CSV', ['filters' => $filters, 'rows' => count($rows)]);
             foreach ($rows as $r) {
                 fputcsv($out, array_map([$this, 'csvSafe'], [
                     $r['company_name'] ?? '', $r['branch_name'] ?? '', $r['store_code'], $r['erp_code'], $r['outlet_description'],
@@ -1063,6 +1082,8 @@ class StoreDetails extends BaseController
             return redirect()->back()->with('error', 'The export request could not be sent for approval. Please try again.');
         }
 
+        ActivityLog::record(self::SLUG, 'export_request', 'store', null, 'Sent an export for approval: ' . $label . ' (' . ApprovalRequests::reference($id) . ')', ['reference' => ApprovalRequests::reference($id), 'filters' => $filters, 'stores' => $count]);
+
         return redirect()->back()->with('approval_sent', [
             'ref'      => ApprovalRequests::reference($id),
             'name'     => $label,
@@ -1082,7 +1103,7 @@ class StoreDetails extends BaseController
             return;
         }
         $verb = ['create' => 'added', 'update' => 'updated', 'delete' => 'deleted'][$action] ?? 'changed';
-        Notifier::send(self::SLUG, 'record_changed', $admin, 'Store ' . $verb, Notifier::nameOf($uid) . ' ' . $verb . ' “' . $name . '”.', 'store-details');
+        Notifier::send(self::SLUG, 'record_changed', $admin, 'Store ' . $verb, Notifier::nameOf($uid) . ' ' . $verb . ' “' . $name . '”.', 'store-details', ['actor' => Notifier::nameOf($uid)]);
     }
 
     // ---------------------------------------------------------------- approval
@@ -1190,6 +1211,11 @@ class StoreDetails extends BaseController
         if (! $id) {
             return redirect()->back()->withInput()->with('error', 'The request could not be sent for approval. Please try again or contact the administrator.');
         }
+
+        ActivityLog::record(self::SLUG, 'request_' . $action, 'store', $store['id'] ?? null, 'Sent for approval: ' . strtolower($actionLabel) . ' "' . $name . '" (' . ApprovalRequests::reference($id) . ')', [
+            'reference' => ApprovalRequests::reference($id),
+            'changes'   => $action === 'update' ? ActivityLog::diff((array) $before, (array) $after) : null,
+        ]);
 
         // shown as a popup (modal-approval-sent in the view), not as the normal green bar
         return redirect()->back()->with('approval_sent', [
@@ -1463,9 +1489,9 @@ class StoreDetails extends BaseController
 
         if ($data['store_status'] !== null) {
             $current = $ignoreId > 0 ? (string) ($db->table('store_details')->select('store_status')->where('id', $ignoreId)->get()->getRowArray()['store_status'] ?? '') : '';
-            $canon   = strcasecmp(trim($current), (string) $data['store_status']) === 0 ? $data['store_status'] : ModuleStatuses::canonical(self::SLUG, (string) $data['store_status']);   // an unchanged old status is kept
+            $canon   = strcasecmp(trim($current), (string) $data['store_status']) === 0 ? $data['store_status'] : ModuleStatuses::canonical(self::SLUG, (string) $data['store_status'], self::STATUS_TYPE);   // an unchanged old status is kept
             if ($canon === null) {
-                return [null, 'Choose a valid status: ' . implode(', ', ModuleStatuses::names(self::SLUG)) . '.'];
+                return [null, 'Choose a valid status: ' . implode(', ', ModuleStatuses::names(self::SLUG, self::STATUS_TYPE)) . '.'];
             }
             $data['store_status'] = $canon !== '' ? $canon : null;
         }
