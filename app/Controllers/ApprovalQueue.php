@@ -6,6 +6,7 @@ use App\Libraries\ApprovalApplier;
 use App\Libraries\Notifier;
 use App\Libraries\Rbac;
 use App\Models\Rbac_model;
+use League\OAuth2\Client\Provider\Google as GoogleProvider;
 use Throwable;
 
 /**
@@ -209,6 +210,7 @@ class ApprovalQueue extends BaseController
         // ---------------------------------------------------------------- approve / reject from the email link (no login)
 
     /** GET approval-email/{token}: shows the request and asks to confirm. Changes NOTHING (mail scanners open links). */
+       /** GET approval-email/{token}: verify page first, then the request + confirm buttons. Changes NOTHING. */
     public function emailPage(string $token)
     {
         [$ctx, $err] = $this->emailContext($token);
@@ -216,8 +218,13 @@ class ApprovalQueue extends BaseController
             return $this->emailView(['state' => 'error', 'message' => $err]);
         }
         $pre = (string) $this->request->getGet('a');
+        $pre = in_array($pre, ['approve', 'reject'], true) ? $pre : '';
 
-        return $this->emailView($this->emailData($ctx['req'], $token) + ['state' => 'form', 'pre' => in_array($pre, ['approve', 'reject'], true) ? $pre : '']);
+        if (! $this->emailVerified($ctx, $token)) {
+            return $this->emailVerifyView($ctx, $token, $pre);
+        }
+
+        return $this->emailView($this->emailData($ctx['req'], $token) + ['state' => 'form', 'pre' => $pre]);
     }
 
     /** POST approval-email/{token}/decide */
@@ -226,6 +233,9 @@ class ApprovalQueue extends BaseController
         [$ctx, $err] = $this->emailContext($token);
         if ($err !== null) {
             return $this->emailView(['state' => 'error', 'message' => $err]);
+        }
+        if (! $this->emailVerified($ctx, $token)) {
+            return $this->emailVerifyView($ctx, $token, '');
         }
         $req = $ctx['req'];
         $uid = (int) $ctx['t']['approver_id'];
@@ -250,10 +260,148 @@ class ApprovalQueue extends BaseController
         \Config\Database::connect()->table('approval_email_tokens')
             ->where('request_id', (int) $req['id'])->where('used_at IS NULL', null, false)
             ->update(['used_at' => date('Y-m-d H:i:s')]);
+        session()->remove('apv_ok');
 
         return $this->emailView(['state' => 'done', 'message' => (string) ($res['body']['message'] ?? 'Saved.'), 'req' => $req, 'decision' => $decision]);
     }
 
+    // ---- identity check for the email link (does NOT log in, does NOT touch usr_account.session_id)
+
+    /** Verified = logged in HERE as the approver, or passed the Google / password check in the last 15 minutes. */
+    private function emailVerified(array $ctx, string $raw): bool
+    {
+        $uid = (int) $ctx['t']['approver_id'];
+        if (session()->get('isLoggedIn') && (int) session()->get('account_id') === $uid) {
+            return true;
+        }
+        $v = session()->get('apv_ok');
+
+        return is_array($v)
+            && hash_equals((string) ($v['h'] ?? ''), hash('sha256', $raw))
+            && (int) ($v['uid'] ?? 0) === $uid
+            && (time() - (int) ($v['at'] ?? 0)) <= 900;
+    }
+
+    private function emailMarkVerified(string $raw, int $uid): void
+    {
+        session()->set('apv_ok', ['h' => hash('sha256', $raw), 'uid' => $uid, 'at' => time()]);
+    }
+
+    private function emailVerifyView(array $ctx, string $raw, string $pre, ?string $error = null)
+    {
+        $acc = \Config\Database::connect()->table('usr_account')->select('email_workspace, password')
+            ->where('id', (int) $ctx['t']['approver_id'])->get()->getRowArray() ?: [];
+
+        return $this->emailView([
+            'state'       => 'verify',
+            'token'       => $raw,
+            'req'         => $ctx['req'],
+            'pre'         => $pre,
+            'error'       => $error,
+            'hasGoogle'   => trim((string) ($acc['email_workspace'] ?? '')) !== '',
+            'hasPassword' => (string) ($acc['password'] ?? '') !== '',
+        ]);
+    }
+
+    /** POST approval-email/{token}/verify : password check (accounts that sign in with username + password) */
+    public function emailVerify(string $token)
+    {
+        [$ctx, $err] = $this->emailContext($token);
+        if ($err !== null) {
+            return $this->emailView(['state' => 'error', 'message' => $err]);
+        }
+        $pre = (string) $this->request->getPost('pre');
+        $pre = in_array($pre, ['approve', 'reject'], true) ? $pre : '';
+
+        if (! service('throttler')->check('apv_' . md5($token . $this->request->getIPAddress()), 5, 300)) {
+            return $this->emailVerifyView($ctx, $token, $pre, 'Too many attempts. Please wait 5 minutes and try again.');
+        }
+        $uid = (int) $ctx['t']['approver_id'];
+        $acc = \Config\Database::connect()->table('usr_account')->select('password')->where('id', $uid)->get()->getRowArray();
+        $pw  = (string) $this->request->getPost('password');
+        if (! $acc || (string) $acc['password'] === '' || $pw === '' || ! password_verify($pw, (string) $acc['password'])) {
+            return $this->emailVerifyView($ctx, $token, $pre, 'Wrong password.');
+        }
+
+        $this->emailMarkVerified($token, $uid);
+
+        return redirect()->to(base_url('approval-email/' . $token) . ($pre !== '' ? '?a=' . $pre : ''));
+    }
+
+    /** GET approval-email/{token}/google : send the approver to Google (the account is pre-selected) */
+    public function emailGoogle(string $token)
+    {
+        [$ctx, $err] = $this->emailContext($token);
+        if ($err !== null) {
+            return $this->emailView(['state' => 'error', 'message' => $err]);
+        }
+        $acc = \Config\Database::connect()->table('usr_account')->select('email_workspace')->where('id', (int) $ctx['t']['approver_id'])->get()->getRowArray();
+        $hint = trim((string) ($acc['email_workspace'] ?? ''));
+        if ($hint === '') {
+            return $this->emailVerifyView($ctx, $token, '', 'This account does not use Google sign-in.');
+        }
+        $pre = (string) $this->request->getGet('a');
+
+        $provider = $this->verifyProvider();
+        $url      = $provider->getAuthorizationUrl(['scope' => ['openid', 'email', 'profile'], 'prompt' => 'select_account', 'login_hint' => $hint]);
+        session()->set(['apv_state' => $provider->getState(), 'apv_raw' => $token, 'apv_pre' => in_array($pre, ['approve', 'reject'], true) ? $pre : '']);
+
+        return redirect()->to($url);
+    }
+
+    /** GET approval-verify/google-callback : the Google email must be the approver's email */
+    public function emailGoogleCallback()
+    {
+        $raw   = (string) session()->get('apv_raw');
+        $saved = (string) session()->get('apv_state');
+        $pre   = (string) session()->get('apv_pre');
+        session()->remove(['apv_raw', 'apv_state', 'apv_pre']);
+
+        $code  = (string) $this->request->getGet('code');
+        $state = (string) $this->request->getGet('state');
+        if ($raw === '' || $code === '' || $saved === '' || ! hash_equals($saved, $state)) {
+            return $this->emailView(['state' => 'error', 'message' => 'The Google check was cancelled or expired. Please open the link in the email again.']);
+        }
+        [$ctx, $err] = $this->emailContext($raw);
+        if ($err !== null) {
+            return $this->emailView(['state' => 'error', 'message' => $err]);
+        }
+
+        try {
+            $provider = $this->verifyProvider();
+            $tok      = $provider->getAccessToken('authorization_code', ['code' => $code]);
+            $info     = $provider->getParsedResponse($provider->getAuthenticatedRequest('GET', 'https://www.googleapis.com/oauth2/v3/userinfo', $tok));
+        } catch (Throwable $e) {
+            log_message('error', 'Approval email Google check failed: {m}', ['m' => $e->getMessage()]);
+
+            return $this->emailVerifyView($ctx, $raw, $pre, 'The Google check could not be completed. Please try again.');
+        }
+
+        $uid = (int) $ctx['t']['approver_id'];
+        $acc = \Config\Database::connect()->table('usr_account')->select('email_workspace')->where('id', $uid)->get()->getRowArray();
+        $mine = strtolower(trim((string) ($acc['email_workspace'] ?? '')));
+        $got  = strtolower(trim((string) ($info['email'] ?? '')));
+        if ($mine === '' || $got === '' || $mine !== $got || empty($info['email_verified'])) {
+            return $this->emailVerifyView($ctx, $raw, $pre, 'You signed in as ' . ($got !== '' ? $got : 'another account') . '. This link is only for ' . ($mine !== '' ? $mine : 'its approver') . '.');
+        }
+
+        $this->emailMarkVerified($raw, $uid);
+
+        return redirect()->to(base_url('approval-email/' . $raw) . ($pre !== '' ? '?a=' . $pre : ''));
+    }
+
+    private function verifyProvider(): GoogleProvider
+    {
+        $g = config('Google');
+
+        return new GoogleProvider([
+            'clientId'     => $g->clientId,
+            'clientSecret' => $g->clientSecret,
+            'redirectUri'  => base_url('approval-verify/google-callback'),
+        ], [
+            'httpClient' => new \GuzzleHttp\Client(['verify' => ENVIRONMENT === 'production']),   // false only on local XAMPP
+        ]);
+    }
     /** @return array{0:?array{t:array<string,mixed>,req:array<string,mixed>},1:?string} [context, error message] */
     private function emailContext(string $raw): array
     {
@@ -312,7 +460,7 @@ class ApprovalQueue extends BaseController
     {
         return $this->response->setHeader('Cache-Control', 'no-store')->setBody(view('approval_queue/email_decide', $data));
     }
-    
+
     // ------------------------------------------------------------------ decision
 
     /** @return array{code:int, body:array<string,mixed>} */

@@ -163,3 +163,10 @@ $routes->group('organization', static function ($routes) {
 // Approve / reject from the email link (the secret token in the link identifies the approver)
 $routes->get('approval-email/(:segment)', 'ApprovalQueue::emailPage/$1');
 $routes->post('approval-email/(:segment)/decide', 'ApprovalQueue::emailDecide/$1');
+$routes->post('approval-email/(:segment)/verify', 'ApprovalQueue::emailVerify/$1');
+$routes->get('approval-email/(:segment)/google', 'ApprovalQueue::emailGoogle/$1');
+$routes->get('approval-verify/google-callback', 'ApprovalQueue::emailGoogleCallback');
+
+// Organization > Company Structure - add at the end of app/Config/Routes.php (after the 'organization' group)
+$routes->get('organization/structure', 'OrganizationStructure::index');         // matrix of one company
+$routes->post('organization/structure/save', 'OrganizationStructure::save');    // save the matrix

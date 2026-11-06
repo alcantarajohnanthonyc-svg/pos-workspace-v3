@@ -51,9 +51,12 @@ $statusForm = static function (string $url, array $row, bool $canToggle) use ($b
         </div>
     <?php endif; ?>
 
-    <div>
-        <h1 class="text-base font-semibold text-slate-800">Organization</h1>
-        <p class="text-xs text-slate-500">The shared lists of positions and departments. Every company uses these same lists.</p>
+    <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+            <h1 class="text-base font-semibold text-slate-800">Organization</h1>
+            <p class="text-xs text-slate-500">The shared lists of positions and departments. Every company uses these same lists.</p>
+        </div>
+        <a href="<?= esc(base_url('organization/structure'), 'attr') ?>" class="<?= $btnGhost ?>"><i class="fa-solid fa-sitemap text-slate-500"></i> Company structure</a>
     </div>
 
     <section class="rounded-xl border border-slate-200 bg-white shadow-sm">

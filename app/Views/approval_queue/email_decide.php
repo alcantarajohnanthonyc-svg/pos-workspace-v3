@@ -36,6 +36,46 @@ $val   = static fn (string $v, string $cls): string => $v === '' ? '<span class=
             <p class="mt-2 text-sm text-slate-600">Reference <span class="font-mono font-semibold"><?= esc($req['reference_no'] ?? '') ?></span>. The requester was notified. You can close this page.</p>
         </div>
 
+     <?php elseif ($state === 'verify'): ?>
+        <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <span class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-xl text-emerald-600">🔒</span>
+            <h1 class="text-center text-base font-bold text-slate-800">Confirm that it is you</h1>
+            <p class="mt-2 text-center text-sm text-slate-600">
+                Request <span class="font-mono font-semibold"><?= esc($req['reference_no'] ?? '') ?></span> is waiting for your decision.
+                Verify your identity to see the details.
+            </p>
+
+            <?php if (! empty($error)): ?>
+                <p class="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700" role="alert"><?= esc($error) ?></p>
+            <?php endif; ?>
+
+            <div class="mt-4 space-y-3">
+                <?php if (! empty($hasGoogle)): ?>
+                    <a href="<?= esc(base_url('approval-email/' . $token . '/google') . ($pre !== '' ? '?a=' . $pre : ''), 'attr') ?>"
+                       class="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700">
+                        Continue with Google
+                    </a>
+                <?php endif; ?>
+
+                <?php if (! empty($hasPassword)): ?>
+                    <form method="post" action="<?= esc(base_url('approval-email/' . $token . '/verify'), 'attr') ?>" class="space-y-2">
+                        <?= csrf_field() ?>
+                        <input type="hidden" name="pre" value="<?= esc($pre, 'attr') ?>">
+                        <label for="apv-pw" class="block text-xs font-medium text-slate-700">Your POS Workspace password</label>
+                        <input id="apv-pw" type="password" name="password" required autocomplete="current-password" maxlength="4096"
+                               class="w-full rounded-lg border border-slate-300 px-3 py-2 text-[13px] focus:border-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-600/20">
+                        <button type="submit" class="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Verify</button>
+                    </form>
+                <?php endif; ?>
+
+                <?php if (empty($hasGoogle) && empty($hasPassword)): ?>
+                    <p class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">This account cannot be verified here. Please open POS Workspace and decide from the Approval Queue.</p>
+                <?php endif; ?>
+            </div>
+
+            <p class="mt-4 text-center text-[11px] text-slate-400">This does not sign you in to POS Workspace and does not affect any other session. The check is valid for 15 minutes.</p>
+        </div>
+
     <?php else: ?>
         <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <h1 class="text-lg font-bold text-slate-800">Approval needed</h1>
